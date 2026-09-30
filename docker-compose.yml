@@ -1,0 +1,14 @@
+services:
+  schulheft-app:
+    build: .
+    container_name: schulheft_pro
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persistent storage for all notebooks, pages, and images
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}

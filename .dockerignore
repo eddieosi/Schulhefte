@@ -1,0 +1,7 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+data/notebooks/*
+!data/notebooks/.gitkeep
