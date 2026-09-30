@@ -6,8 +6,8 @@ WORKDIR /app
 # Copy dependency specifications
 COPY package.json package-lock.json* bun.lock* ./
 
-# Install dependencies
-RUN npm install
+# Install dependencies with legacy peer deps flag to ensure smooth container builds
+RUN npm install --legacy-peer-deps
 
 # Copy application source code
 COPY . .
