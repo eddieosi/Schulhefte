@@ -4,7 +4,7 @@ services:
     container_name: schulheft_pro
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "0.0.0.0:3000:3000"
     volumes:
       # Persistent storage for all notebooks, pages, and images
       - ./data:/app/data
