@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { RotateCw, X, PenTool, Check } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { RotateCw, X, PenTool, Check, Move } from 'lucide-react';
 
 interface GeodreieckProps {
   isVisible: boolean;
@@ -8,85 +8,99 @@ interface GeodreieckProps {
 }
 
 export const Geodreieck: React.FC<GeodreieckProps> = ({ isVisible, onClose, onDrawEdgeLine }) => {
-  // Center position of Geodreieck on screen/canvas
   const [position, setPosition] = useState({ x: 380, y: 340 });
   const [rotation, setRotation] = useState(0); // in degrees
-  const [scale] = useState(1);
   const [lineDrawnToast, setLineDrawnToast] = useState(false);
 
-  const isDraggingRef = useRef(false);
-  const isRotatingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const rotateStartRef = useRef({ angle: 0, startMouseAngle: 0 });
 
   if (!isVisible) return null;
 
-  // Pointer drag for moving the Geodreieck
+  // Bulletproof Window Pointer Drag for Moving
   const handleMovePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
-    isDraggingRef.current = true;
+    e.preventDefault();
+
     dragStartRef.current = {
       x: e.clientX - position.x,
       y: e.clientY - position.y,
     };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+    const handleWindowMove = (moveEv: PointerEvent) => {
+      moveEv.preventDefault();
+      setPosition({
+        x: Math.round(moveEv.clientX - dragStartRef.current.x),
+        y: Math.round(moveEv.clientY - dragStartRef.current.y),
+      });
+    };
+
+    const handleWindowUp = () => {
+      window.removeEventListener('pointermove', handleWindowMove);
+      window.removeEventListener('pointerup', handleWindowUp);
+      window.removeEventListener('pointercancel', handleWindowUp);
+    };
+
+    window.addEventListener('pointermove', handleWindowMove, { passive: false });
+    window.addEventListener('pointerup', handleWindowUp);
+    window.addEventListener('pointercancel', handleWindowUp);
   };
 
-  const handleMovePointerMove = (e: React.PointerEvent) => {
-    if (!isDraggingRef.current) return;
-    setPosition({
-      x: e.clientX - dragStartRef.current.x,
-      y: e.clientY - dragStartRef.current.y,
-    });
-  };
-
-  const handleMovePointerUp = (e: React.PointerEvent) => {
-    isDraggingRef.current = false;
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
-  };
-
-  // Pointer drag for rotating
+  // Bulletproof Window Pointer Drag for Rotating
   const handleRotatePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
-    isRotatingRef.current = true;
+    e.preventDefault();
+
     const dx = e.clientX - position.x;
     const dy = e.clientY - position.y;
     const currentAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
+
     rotateStartRef.current = {
       angle: rotation,
       startMouseAngle: currentAngle,
     };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  };
 
-  const handleRotatePointerMove = (e: React.PointerEvent) => {
-    if (!isRotatingRef.current) return;
-    const dx = e.clientX - position.x;
-    const dy = e.clientY - position.y;
-    const currentAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
-    const angleDiff = currentAngle - rotateStartRef.current.startMouseAngle;
-    let newRotation = (rotateStartRef.current.angle + angleDiff) % 360;
-    // Snap to 0, 45, 90, 180, 270 if close
-    const snapAngles = [0, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 240, 270, 315];
-    for (const snap of snapAngles) {
-      if (Math.abs(newRotation - snap) < 2.5) {
-        newRotation = snap;
-        break;
+    const handleWindowRotate = (moveEv: PointerEvent) => {
+      moveEv.preventDefault();
+      const moveDx = moveEv.clientX - position.x;
+      const moveDy = moveEv.clientY - position.y;
+      const angle = (Math.atan2(moveDy, moveDx) * 180) / Math.PI;
+      const angleDiff = angle - rotateStartRef.current.startMouseAngle;
+      let newRotation = (rotateStartRef.current.angle + angleDiff) % 360;
+      if (newRotation < 0) newRotation += 360;
+
+      // Magnetic snap to cardinal & standard angles
+      const snapAngles = [0, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 240, 270, 315, 360];
+      for (const snap of snapAngles) {
+        if (Math.abs(newRotation - snap) < 3.5 || Math.abs(newRotation - (snap - 360)) < 3.5) {
+          newRotation = snap === 360 ? 0 : snap;
+          break;
+        }
       }
-    }
-    setRotation(Math.round(newRotation));
+      setRotation(Math.round(newRotation));
+    };
+
+    const handleWindowRotateUp = () => {
+      window.removeEventListener('pointermove', handleWindowRotate);
+      window.removeEventListener('pointerup', handleWindowRotateUp);
+      window.removeEventListener('pointercancel', handleWindowRotateUp);
+    };
+
+    window.addEventListener('pointermove', handleWindowRotate, { passive: false });
+    window.addEventListener('pointerup', handleWindowRotateUp);
+    window.addEventListener('pointercancel', handleWindowRotateUp);
   };
 
-  const handleRotatePointerUp = (e: React.PointerEvent) => {
-    isRotatingRef.current = false;
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
+  // Quick 45° step rotate
+  const handleStepRotate = (delta: number) => {
+    setRotation(prev => {
+      let next = (prev + delta) % 360;
+      if (next < 0) next += 360;
+      return next;
+    });
   };
 
-  // Draw straight line along bottom edge (where the numbers -7 to +7 stand)
+  // Draw straight line along bottom edge (hypotenuse numbers -7 to +7 cm)
   const handleDrawEdge = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!onDrawEdgeLine) return;
@@ -95,34 +109,29 @@ export const Geodreieck: React.FC<GeodreieckProps> = ({ isVisible, onClose, onDr
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
 
-    // Center of the DOM element corresponds to y = -90 in the viewBox.
-    // The hypotenuse with the numbers is at y = 0, which is exactly +90px below the center.
     const edgeOffset = 90;
-    const edgeCenterX = position.x - edgeOffset * sin;
-    const edgeCenterY = position.y + edgeOffset * cos;
+    const halfWidth = 170;
 
-    // Line from x = -165 to x = +165 along the bottom numbers edge
     const p1 = {
-      x: edgeCenterX - 165 * cos,
-      y: edgeCenterY - 165 * sin,
+      x: position.x + (-halfWidth * cos - edgeOffset * sin),
+      y: position.y + (-halfWidth * sin + edgeOffset * cos),
     };
     const p2 = {
-      x: edgeCenterX + 165 * cos,
-      y: edgeCenterY + 165 * sin,
+      x: position.x + (halfWidth * cos - edgeOffset * sin),
+      y: position.y + (halfWidth * sin + edgeOffset * cos),
     };
 
     onDrawEdgeLine(p1, p2);
     setLineDrawnToast(true);
-    setTimeout(() => setLineDrawnToast(false), 1500);
+    setTimeout(() => setLineDrawnToast(false), 1800);
   };
 
-  // Geodreieck dimensions (width = 340px, height = 170px, hypotenuse = 340px)
   const halfWidth = 170;
   const height = 170;
 
   // Generate millimeter ticks along hypotenuse (-7 to +7 cm)
   const ticks = [];
-  const cmStep = halfWidth / 7; // pixels per cm (~24.28px)
+  const cmStep = halfWidth / 7;
   for (let cm = -7; cm <= 7; cm++) {
     const x = cm * cmStep;
     ticks.push({
@@ -131,7 +140,6 @@ export const Geodreieck: React.FC<GeodreieckProps> = ({ isVisible, onClose, onDr
       label: Math.abs(cm).toString(),
       height: 12,
     });
-    // mm ticks
     if (cm < 7) {
       for (let mm = 1; mm < 10; mm++) {
         const mmX = x + (mm * cmStep) / 10;
@@ -147,148 +155,120 @@ export const Geodreieck: React.FC<GeodreieckProps> = ({ isVisible, onClose, onDr
 
   return (
     <div
-      className="absolute select-none pointer-events-none z-30"
+      className="absolute select-none pointer-events-none z-30 touch-none"
       style={{
         left: `${position.x}px`,
         top: `${position.y}px`,
-        transform: `translate(-50%, -50%) rotate(${rotation}deg) scale(${scale})`,
+        transform: `translate(-50%, -50%) rotate(${rotation}deg)`,
         transformOrigin: 'center center',
       }}
     >
-      <div className="relative w-[380px] h-[220px] flex items-center justify-center">
+      <div className="relative w-[380px] h-[220px] flex items-center justify-center touch-none">
         {/* SVG Drawing of Authentic German Geodreieck */}
         <svg
           viewBox="-190 -190 380 200"
-          className="w-full h-full drop-shadow-xl overflow-visible pointer-events-auto cursor-move"
+          className="w-full h-full drop-shadow-2xl overflow-visible pointer-events-auto cursor-move touch-none"
           onPointerDown={handleMovePointerDown}
-          onPointerMove={handleMovePointerMove}
-          onPointerUp={handleMovePointerUp}
         >
           <defs>
             <linearGradient id="geoGlass" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#fef08a" stop-opacity="0.38" />
-              <stop offset="50%" stop-color="#fef9c3" stop-opacity="0.25" />
-              <stop offset="100%" stop-color="#fef08a" stop-opacity="0.4" />
+              <stop offset="0%" stopColor="#fef08a" stopOpacity="0.45" />
+              <stop offset="50%" stopColor="#fef9c3" stopOpacity="0.3" />
+              <stop offset="100%" stopColor="#fef08a" stopOpacity="0.45" />
             </linearGradient>
             <filter id="geoGlow">
-              <feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000000" flood-opacity="0.2" />
+              <feDropShadow dx="0" dy="1" stdDeviation="1" floodColor="#000000" floodOpacity="0.25" />
             </filter>
           </defs>
 
-          {/* Triangular Body (Hypotenuse at y=0, Apex at y=-170) */}
+          {/* Triangular Body */}
           <polygon
             points={`-${halfWidth},0 ${halfWidth},0 0,-${height}`}
             fill="url(#geoGlass)"
             stroke="#b45309"
-            stroke-width="1.8"
-            stroke-linejoin="round"
-            className="backdrop-blur-[1px]"
+            strokeWidth="1.5"
+            strokeLinejoin="round"
           />
 
-          {/* Red line guide along the bottom numbers edge */}
-          <line
-            x1={`-${halfWidth}`}
-            y1="0"
-            x2={`${halfWidth}`}
-            y2="0"
-            stroke="#dc2626"
-            stroke-width="2.5"
-            stroke-opacity="0.9"
-          />
+          {/* Center Vertical Altitude Line */}
+          <line x1="0" y1="0" x2="0" y2={-height} stroke="#b45309" strokeWidth="1" strokeDasharray="3 2" />
 
-          {/* Yellow translucent degree arc band */}
+          {/* Parallel Guidelines */}
+          {[-20, -40, -60, -80, -100, -120].map((y) => {
+            const span = ((height + y) / height) * halfWidth;
+            return (
+              <g key={y}>
+                <line x1={-span} y1={y} x2={span} y2={y} stroke="#d97706" strokeWidth="0.7" strokeOpacity="0.8" />
+                <text x={span - 8} y={y - 2} fontSize="6" fill="#78350f" textAnchor="end">
+                  {Math.abs(y / 10)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Protractor Arc */}
           <path
-            d="M -115,0 A 115 115 0 0 1 115,0"
+            d={`M -${halfWidth * 0.72} 0 A ${halfWidth * 0.72} ${halfWidth * 0.72} 0 0 1 ${halfWidth * 0.72} 0`}
             fill="none"
-            stroke="#f59e0b"
-            stroke-width="16"
-            stroke-opacity="0.3"
+            stroke="#b45309"
+            strokeWidth="0.9"
           />
 
-          {/* Degree ticks (10° to 170°) */}
-          {Array.from({ length: 17 }).map((_, i) => {
-            const deg = (i + 1) * 10;
+          {/* Protractor Angle Rays */}
+          {[10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170].map((deg) => {
             const rad = (deg * Math.PI) / 180;
-            const r1 = 107;
-            const r2 = 123;
-            const x1 = -r1 * Math.cos(rad);
-            const y1 = -r1 * Math.sin(rad);
-            const x2 = -r2 * Math.cos(rad);
-            const y2 = -r2 * Math.sin(rad);
-
-            const labelR = 98;
-            const lx = -labelR * Math.cos(rad);
-            const ly = -labelR * Math.sin(rad);
+            const rInner = halfWidth * 0.72;
+            const rOuter = halfWidth * 0.77;
+            const x1 = -rInner * Math.cos(rad);
+            const y1 = -rInner * Math.sin(rad);
+            const x2 = -rOuter * Math.cos(rad);
+            const y2 = -rOuter * Math.sin(rad);
+            const labelX = -(rOuter + 6) * Math.cos(rad);
+            const labelY = -(rOuter + 6) * Math.sin(rad);
+            const isMajor = deg % 10 === 0;
 
             return (
               <g key={deg}>
-                <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#b45309" stroke-width={deg === 90 || deg === 45 || deg === 135 ? "1.5" : "0.8"} />
-                {deg % 20 === 0 && (
+                <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#78350f" strokeWidth={isMajor ? 0.9 : 0.5} />
+                {isMajor && (
                   <text
-                    x={lx}
-                    y={ly}
-                    fontSize="7"
+                    x={labelX}
+                    y={labelY}
+                    fontSize="6"
                     fontFamily="sans-serif"
                     fontWeight="bold"
                     fill="#78350f"
                     textAnchor="middle"
                     dominantBaseline="central"
                   >
-                    {deg}°
+                    {deg}
                   </text>
                 )}
               </g>
             );
           })}
 
-          {/* Center Perpendicular Axis (Mittellinie) */}
-          <line
-            x1="0"
-            y1="0"
-            x2="0"
-            y2={`-${height}`}
-            stroke="#b45309"
-            stroke-width="1.2"
-            stroke-dasharray="4,2"
-          />
-
-          {/* Parallel helper lines (Abstandslinien) */}
-          {[15, 30, 45, 60, 80, 100, 120].map((dist) => {
-            const xExtent = halfWidth - dist;
-            return (
-              <line
-                key={dist}
-                x1={-xExtent}
-                y1={-dist}
-                x2={xExtent}
-                y2={-dist}
-                stroke="#d97706"
-                stroke-width="0.6"
-                stroke-opacity="0.6"
-              />
-            );
-          })}
-
-          {/* Millimeter & Centimeter Ticks along Hypotenuse (y=0) */}
+          {/* Millimeter Ticks along Hypotenuse (y=0) */}
           {ticks.map((t, idx) => (
             <g key={idx}>
               <line
                 x1={t.x}
-                y1="0"
+                y1={0}
                 x2={t.x}
                 y2={-t.height}
                 stroke="#78350f"
-                stroke-width={t.isCm ? "1.2" : "0.7"}
+                strokeWidth={t.isCm ? '1.2' : '0.6'}
               />
               {t.label && (
                 <text
                   x={t.x}
-                  y="-15"
-                  fontSize="7.5"
+                  y="-16"
+                  fontSize="8"
                   fontFamily="sans-serif"
                   fontWeight="bold"
                   fill="#78350f"
                   textAnchor="middle"
+                  dominantBaseline="central"
                 >
                   {t.label}
                 </text>
@@ -296,20 +276,29 @@ export const Geodreieck: React.FC<GeodreieckProps> = ({ isVisible, onClose, onDr
             </g>
           ))}
 
-          {/* Center Origin Mark (0 Punkt) */}
-          <circle cx="0" cy="0" r="3" fill="#dc2626" />
-          <circle cx="0" cy="-60" r="14" fill="#ffffff" fill-opacity="0.75" stroke="#b45309" stroke-width="1" />
-          <text x="0" y="-58" fontSize="8" fontWeight="bold" fill="#78350f" textAnchor="middle" dominantBaseline="central">
+          {/* Zero Center Point and Angle Indicator */}
+          <circle cx="0" cy="0" r="3.5" fill="#dc2626" />
+          <circle cx="0" cy="-60" r="15" fill="#ffffff" fillOpacity="0.8" stroke="#b45309" strokeWidth="1" />
+          <text x="0" y="-58" fontSize="9" fontWeight="bold" fill="#78350f" textAnchor="middle" dominantBaseline="central">
             {rotation}°
           </text>
         </svg>
 
-        {/* Interactive Controls Floating on Geodreieck */}
+        {/* Interactive Controls Overlay */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          {/* Quick Action: Draw Straight Line Exactly Along Bottom Numbers Edge (Moved clearly below the ruler edge so numbers are uncovered) */}
+          {/* Center Move Handle Icon - Visual guide for dragging */}
+          <div
+            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-6 w-9 h-9 rounded-full bg-amber-600/90 text-white shadow-lg flex items-center justify-center cursor-move pointer-events-auto touch-none border-2 border-white hover:scale-105 transition"
+            onPointerDown={handleMovePointerDown}
+            title="Geodreieck verschieben"
+          >
+            <Move className="w-4 h-4" />
+          </div>
+
+          {/* Draw Straight Line Along Edge Button */}
           <button
             onClick={handleDrawEdge}
-            className="absolute -bottom-10 px-3.5 py-1.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold shadow-xl flex items-center gap-1.5 pointer-events-auto transition active:scale-95 border-2 border-white"
+            className="absolute -bottom-10 px-3.5 py-1.5 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold shadow-xl flex items-center gap-1.5 pointer-events-auto transition active:scale-95 border-2 border-white touch-none"
             title="Einen exakten geraden Strich an der unteren Kante (bei den Zahlen) zeichnen"
           >
             {lineDrawnToast ? (
@@ -325,21 +314,37 @@ export const Geodreieck: React.FC<GeodreieckProps> = ({ isVisible, onClose, onDr
             )}
           </button>
 
-          {/* Rotate Handle */}
+          {/* Rotate Dial Handle (Top Right) - Large 38x38px touch handle */}
           <div
-            className="absolute -top-6 right-2 w-8 h-8 rounded-full bg-amber-500 hover:bg-amber-600 text-white shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing pointer-events-auto transition active:scale-95"
+            className="absolute -top-7 right-0 w-9 h-9 rounded-full bg-amber-500 hover:bg-amber-600 text-white shadow-xl flex items-center justify-center cursor-grab active:cursor-grabbing pointer-events-auto transition active:scale-90 border-2 border-white touch-none"
             onPointerDown={handleRotatePointerDown}
-            onPointerMove={handleRotatePointerMove}
-            onPointerUp={handleRotatePointerUp}
-            title="Drehen (gedrückt halten und ziehen)"
+            title="Drehen (gedrückt halten und im Kreis ziehen)"
           >
             <RotateCw className="w-4 h-4" />
+          </div>
+
+          {/* Quick 45° step buttons floating next to rotate handle */}
+          <div className="absolute -top-7 right-11 flex items-center gap-1 pointer-events-auto">
+            <button
+              onClick={() => handleStepRotate(45)}
+              className="px-2 py-1 rounded-lg bg-white/90 dark:bg-stone-800/90 text-stone-800 dark:text-stone-200 border border-stone-300 dark:border-stone-700 shadow-md text-[10px] font-bold hover:bg-stone-100"
+              title="+45° drehen"
+            >
+              +45°
+            </button>
+            <button
+              onClick={() => setRotation(0)}
+              className="px-2 py-1 rounded-lg bg-white/90 dark:bg-stone-800/90 text-stone-800 dark:text-stone-200 border border-stone-300 dark:border-stone-700 shadow-md text-[10px] font-bold hover:bg-stone-100"
+              title="Auf 0° zurücksetzen"
+            >
+              0°
+            </button>
           </div>
 
           {/* Close Button */}
           <button
             onClick={onClose}
-            className="absolute -top-6 left-2 w-7 h-7 rounded-full bg-stone-700/80 hover:bg-stone-900 text-white shadow-md flex items-center justify-center pointer-events-auto transition active:scale-90"
+            className="absolute -top-7 left-0 w-8 h-8 rounded-full bg-stone-700 hover:bg-stone-900 text-white shadow-lg flex items-center justify-center pointer-events-auto transition active:scale-90 border-2 border-white"
             title="Geodreieck ausblenden"
           >
             <X className="w-4 h-4" />

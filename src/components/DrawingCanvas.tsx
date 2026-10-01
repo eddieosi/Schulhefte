@@ -15,6 +15,88 @@ interface DrawingCanvasProps {
   isDarkMode?: boolean;
 }
 
+function hexToRgba(hex: string): { r: number; g: number; b: number; a: number } {
+  let c = hex.replace('#', '');
+  if (c.length === 3) c = c.split('').map(x => x + x).join('');
+  if (c.length === 6) c += 'ff';
+  const num = parseInt(c, 16);
+  return {
+    r: (num >> 24) & 255,
+    g: (num >> 16) & 255,
+    b: (num >> 8) & 255,
+    a: num & 255,
+  };
+}
+
+function executeFloodFill(
+  ctx: CanvasRenderingContext2D,
+  startX: number,
+  startY: number,
+  fillColorHex: string,
+  width: number,
+  height: number
+) {
+  const x = Math.floor(startX);
+  const y = Math.floor(startY);
+  if (x < 0 || x >= width || y < 0 || y >= height) return;
+
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+  const targetRgba = hexToRgba(fillColorHex);
+
+  const startIdx = (y * width + x) * 4;
+  const startR = data[startIdx];
+  const startG = data[startIdx + 1];
+  const startB = data[startIdx + 2];
+  const startA = data[startIdx + 3];
+
+  if (startR === targetRgba.r && startG === targetRgba.g && startB === targetRgba.b && startA === targetRgba.a) {
+    return;
+  }
+
+  const match = (idx: number) => {
+    return (
+      Math.abs(data[idx] - startR) <= 30 &&
+      Math.abs(data[idx + 1] - startG) <= 30 &&
+      Math.abs(data[idx + 2] - startB) <= 30 &&
+      Math.abs(data[idx + 3] - startA) <= 30
+    );
+  };
+
+  const visited = new Uint8Array(width * height);
+  const queue: [number, number][] = [[x, y]];
+  visited[y * width + x] = 1;
+
+  while (queue.length > 0) {
+    const [cx, cy] = queue.pop()!;
+    const idx = (cy * width + cx) * 4;
+    data[idx] = targetRgba.r;
+    data[idx + 1] = targetRgba.g;
+    data[idx + 2] = targetRgba.b;
+    data[idx + 3] = targetRgba.a;
+
+    // Scan 4 neighbors
+    if (cx + 1 < width && !visited[cy * width + (cx + 1)]) {
+      visited[cy * width + (cx + 1)] = 1;
+      if (match((cy * width + (cx + 1)) * 4)) queue.push([cx + 1, cy]);
+    }
+    if (cx - 1 >= 0 && !visited[cy * width + (cx - 1)]) {
+      visited[cy * width + (cx - 1)] = 1;
+      if (match((cy * width + (cx - 1)) * 4)) queue.push([cx - 1, cy]);
+    }
+    if (cy + 1 < height && !visited[(cy + 1) * width + cx]) {
+      visited[(cy + 1) * width + cx] = 1;
+      if (match(((cy + 1) * width + cx) * 4)) queue.push([cx, cy + 1]);
+    }
+    if (cy - 1 >= 0 && !visited[(cy - 1) * width + cx]) {
+      visited[(cy - 1) * width + cx] = 1;
+      if (match(((cy - 1) * width + cx) * 4)) queue.push([cx, cy - 1]);
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+}
+
 export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   width,
   height,
@@ -58,6 +140,15 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (!points || points.length === 0) return;
 
     ctx.save();
+
+    if (stroke.tool === 'fill') {
+      const pt = points[0];
+      if (pt) {
+        executeFloodFill(ctx, pt.x, pt.y, stroke.color, width, height);
+      }
+      ctx.restore();
+      return;
+    }
 
     if (stroke.tool === 'highlighter') {
       // Marker is strictly 50% opacity
@@ -196,8 +287,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     onStartDrawing?.();
 
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const scaleX = rect.width > 0 ? width / rect.width : 1;
+    const scaleY = rect.height > 0 ? height / rect.height : 1;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
     const pressure = e.pressure > 0 ? e.pressure : 0.5;
 
     isDrawingRef.current = true;
@@ -206,6 +299,24 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     // Eraser tool
     if (activeTool === 'eraser') {
       eraseStrokeAt(x, y, strokeSize * 2.5);
+      return;
+    }
+
+    // Flood Fill Tool
+    if (activeTool === 'fill') {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return;
+      executeFloodFill(ctx, x, y, strokeColor, width, height);
+      const fillStroke: Stroke = {
+        id: 's-fill-' + Date.now(),
+        tool: 'fill',
+        color: strokeColor,
+        size: 0,
+        points: [{ x, y }],
+      };
+      onStrokesChange([...strokes, fillStroke]);
       return;
     }
 
@@ -230,8 +341,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     if (stylusOnlyMode && e.pointerType === 'touch') return;
 
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const scaleX = rect.width > 0 ? width / rect.width : 1;
+    const scaleY = rect.height > 0 ? height / rect.height : 1;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
     const pressure = e.pressure > 0 ? e.pressure : 0.5;
 
     if (activeTool === 'eraser') {
@@ -306,6 +419,8 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           ? 'cursor-grab'
           : activeTool === 'eraser'
           ? 'cursor-cell'
+          : activeTool === 'fill'
+          ? 'cursor-crosshair'
           : activeTool === 'text'
           ? 'cursor-text'
           : 'cursor-crosshair'

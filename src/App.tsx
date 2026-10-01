@@ -4,6 +4,7 @@ import { NotebookShelf } from './components/NotebookShelf';
 import { NotebookView } from './components/NotebookView';
 import { TutorialModal } from './components/TutorialModal';
 import { LoginView } from './components/LoginView';
+import { VersionUpdateBanner } from './components/VersionUpdateBanner';
 import { api, getStoredUser } from './services/api';
 
 export default function App() {
@@ -171,6 +172,9 @@ export default function App() {
         isOpen={isTutorialOpen}
         onClose={handleCloseTutorial}
       />
+
+      {/* PWA Auto-Update Banner */}
+      <VersionUpdateBanner />
     </div>
   );
 }

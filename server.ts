@@ -448,6 +448,21 @@ function resolveTargetUsername(req: Request): string {
   return req.user.username;
 }
 
+// Version check endpoint for PWA auto-update
+const APP_VERSION = '1.4.0';
+const SERVER_BUILD_TIME = Date.now().toString();
+
+app.get('/api/version', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.json({
+    version: APP_VERSION,
+    buildTime: SERVER_BUILD_TIME,
+    serverTime: new Date().toISOString(),
+  });
+});
+
 // ================= AUTH ROUTES =================
 
 // Login endpoint

@@ -19,6 +19,7 @@ import {
   Users,
   LogOut,
   ShieldCheck,
+  RefreshCw,
   User as UserIcon
 } from 'lucide-react';
 import { api } from '../services/api';
@@ -83,6 +84,46 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
   // Backup / Cloud Sync Modal
   const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [restoreStatus, setRestoreStatus] = useState<string | null>(null);
+
+  // Version & PWA Update State
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [updateStatusNotice, setUpdateStatusNotice] = useState<string | null>(null);
+
+  const handleCheckForUpdates = async () => {
+    setIsCheckingUpdate(true);
+    setUpdateStatusNotice(null);
+    try {
+      window.dispatchEvent(new CustomEvent('trigger-version-check'));
+
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          await reg.update().catch(() => {});
+        }
+      }
+
+      const res = await fetch('/api/version', { 
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache', 'Pragma': 'no-cache' }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const currentBuildTime = sessionStorage.getItem('schulheft_initial_build_time');
+        if (currentBuildTime && data.buildTime && currentBuildTime !== data.buildTime) {
+          setUpdateStatusNotice('Neues Update gefunden! Siehe Banner unten.');
+        } else {
+          setUpdateStatusNotice(`Version ${data.version || '1.4.0'} ist aktuell`);
+        }
+      } else {
+        setUpdateStatusNotice('App ist auf dem neuesten Stand');
+      }
+    } catch {
+      setUpdateStatusNotice('Offline — Lokale Version wird genutzt');
+    } finally {
+      setIsCheckingUpdate(false);
+      setTimeout(() => setUpdateStatusNotice(null), 3500);
+    }
+  };
 
   // Subject list
   const subjects = ['Alle', ...Array.from(new Set(notebooks.map(n => n.subject).filter(Boolean)))];
@@ -337,6 +378,16 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
           {/* PWA Install */}
           <PWAInstallButton />
 
+          {/* Version & PWA Update Check Button */}
+          <button
+            onClick={handleCheckForUpdates}
+            disabled={isCheckingUpdate}
+            className="p-2 rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition active:scale-95 relative"
+            title="Auf App-Updates prüfen (PWA & Version)"
+          >
+            <RefreshCw className={`w-4 h-4 ${isCheckingUpdate ? 'animate-spin text-blue-600 dark:text-blue-400' : ''}`} />
+          </button>
+
           {/* Cloud / Backup Sync Modal trigger */}
           <button
             onClick={() => setIsBackupModalOpen(true)}
@@ -403,6 +454,14 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
           </button>
         </div>
       </header>
+
+      {/* Update Check Status Toast */}
+      {updateStatusNotice && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-2xl bg-stone-900 dark:bg-white text-white dark:text-stone-900 text-xs font-semibold shadow-2xl border border-stone-700 dark:border-stone-300 animate-in fade-in slide-in-from-top-2 flex items-center gap-2">
+          <RefreshCw className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+          <span>{updateStatusNotice}</span>
+        </div>
+      )}
 
       {/* Main Body */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-8 py-6 pb-28">

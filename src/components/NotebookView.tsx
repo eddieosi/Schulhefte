@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Notebook, Page, Stroke, TextBox, ImageElement, ToolType, RulingType } from '../types/notebook';
+import { Notebook, Page, Stroke, TextBox, ImageElement, ShapeElement, ShapeType, ToolType, RulingType } from '../types/notebook';
 import { PageRuling } from './PageRuling';
 import { DrawingCanvas } from './DrawingCanvas';
 import { PageTextBox } from './PageTextBox';
 import { PageImage } from './PageImage';
+import { PageShape } from './PageShape';
+import { ShapesModal } from './ShapesModal';
 import { Geodreieck } from './Geodreieck';
 import { Lineal } from './Lineal';
 import { exportNotebookToPDF } from '../utils/pdfExport';
@@ -30,7 +32,18 @@ import {
   Moon,
   Loader2,
   Move,
-  ShieldCheck
+  ShieldCheck,
+  PaintBucket,
+  Shapes,
+  Square,
+  Circle,
+  Triangle,
+  Maximize,
+  Minimize,
+  ZoomIn,
+  ZoomOut,
+  Scan,
+  X
 } from 'lucide-react';
 
 interface NotebookViewProps {
@@ -71,6 +84,74 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
 
   // Delete Page Modal State (avoids blocked window.confirm in iframes)
   const [isDeletePageModalOpen, setIsDeletePageModalOpen] = useState(false);
+
+  // Fullscreen, Zoom & Shapes State
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isShapesMenuOpen, setIsShapesMenuOpen] = useState(false);
+  const [zoom, setZoom] = useState(1.0);
+  const pinchStartDistRef = useRef<number | null>(null);
+  const pinchStartZoomRef = useRef<number>(1.0);
+
+  const handleZoomIn = () => setZoom(z => Math.min(2.5, Math.round((z + 0.15) * 100) / 100));
+  const handleZoomOut = () => setZoom(z => Math.max(0.4, Math.round((z - 0.15) * 100) / 100));
+  const handleZoomReset = () => setZoom(1.0);
+  const handleZoomFitWidth = () => {
+    // Fits DIN A4 page (840px) to current viewport width
+    const availableWidth = window.innerWidth - 32;
+    const targetZoom = Math.min(1.5, Math.max(0.4, Math.round((availableWidth / 840) * 100) / 100));
+    setZoom(targetZoom);
+  };
+
+  const handleTouchStartContainer = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      pinchStartDistRef.current = dist;
+      pinchStartZoomRef.current = zoom;
+    }
+  };
+
+  const handleTouchMoveContainer = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchStartDistRef.current !== null && pinchStartDistRef.current > 10) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const factor = dist / pinchStartDistRef.current;
+      const nextZoom = Math.min(2.5, Math.max(0.4, Math.round(pinchStartZoomRef.current * factor * 100) / 100));
+      setZoom(nextZoom);
+    }
+  };
+
+  const handleTouchEndContainer = () => {
+    pinchStartDistRef.current = null;
+  };
+
+  const handleWheelContainer = (e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const delta = -e.deltaY * 0.003;
+      setZoom(z => Math.min(2.5, Math.max(0.4, Math.round((z + delta) * 100) / 100)));
+    }
+  };
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+    }
+  };
 
   // Paper options
   const [darkPaper, setDarkPaper] = useState(false);
@@ -325,6 +406,34 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
     triggerAutoSave(updated);
   };
 
+  // Add Geometric Shape to active page
+  const handleAddShape = (type: ShapeType, customStrokeColor?: string, customFillColor?: string) => {
+    if (!activePage) return;
+    const finalStroke = customStrokeColor || strokeColor || '#1e40af';
+    const finalFill = customFillColor !== undefined ? customFillColor : 'transparent';
+    const newShape: ShapeElement = {
+      id: 'shape-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      type,
+      x: 140,
+      y: 180,
+      width: type === 'circle' ? 160 : type === 'triangle' ? 180 : 200,
+      height: type === 'circle' ? 160 : type === 'triangle' ? 160 : 120,
+      strokeColor: finalStroke,
+      strokeWidth: 3,
+      fillColor: finalFill,
+    };
+
+    const updated = {
+      ...activePage,
+      shapes: [...(activePage.shapes || []), newShape],
+    };
+    setPages(prev => prev.map(p => p.id === activePage.id ? updated : p));
+    setActiveTool('pan');
+    setSelectedElementId(newShape.id);
+    setIsShapesMenuOpen(false);
+    triggerAutoSave(updated);
+  };
+
   // Add Image to active page
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -459,8 +568,8 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
 
   return (
     <div className="h-screen w-screen bg-stone-200 dark:bg-stone-950 flex flex-col overflow-hidden select-none">
-      {/* Top Header Bar */}
-      <header className="h-14 bg-white/95 dark:bg-stone-900/95 backdrop-blur-md border-b border-stone-200 dark:border-stone-800 px-3 sm:px-6 flex items-center justify-between z-30 shrink-0 shadow-sm">
+      {/* Top Header Bar with Safe Area Inset for mobile address bars */}
+      <header className="min-h-14 pt-[env(safe-area-inset-top,0px)] bg-white/95 dark:bg-stone-900/95 backdrop-blur-md border-b border-stone-200 dark:border-stone-800 px-3 sm:px-6 flex items-center justify-between z-30 shrink-0 shadow-sm">
         {/* Left: Back button & Title */}
         <div className="flex items-center gap-2 sm:gap-3">
           <button
@@ -617,6 +726,19 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
           >
             <Moon className="w-3.5 h-3.5" />
           </button>
+
+          {/* Fullscreen Mode Switch */}
+          <button
+            onClick={toggleFullscreen}
+            className={`p-1.5 rounded-lg border transition ${
+              isFullscreen
+                ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                : 'bg-stone-100 dark:bg-stone-800 border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-200'
+            }`}
+            title={isFullscreen ? 'Vollbild beenden' : 'Vollbildmodus aktivieren (blendet störende Browserleisten aus)'}
+          >
+            {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
+          </button>
         </div>
       </header>
 
@@ -725,10 +847,65 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
           >
             <Minus className="w-4 h-4 stroke-[3]" />
           </button>
+
+          {/* Füllwerkzeug (Paint Bucket) */}
+          <button
+            onClick={() => {
+              handleSelectTool('fill');
+              setSelectedElementId(null);
+            }}
+            className={`p-2 rounded-xl text-xs font-semibold transition ${
+              activeTool === 'fill'
+                ? 'bg-amber-600 text-white shadow-md shadow-amber-500/20'
+                : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+            }`}
+            title="Füllwerkzeug: Geschlossene Flächen oder Formen mit Farbe füllen"
+          >
+            <PaintBucket className="w-4 h-4" />
+          </button>
         </div>
 
         {/* Geometrie & Instrumente */}
         <div className="flex items-center gap-1 border-x border-stone-200 dark:border-stone-800 px-2">
+          {/* Main Shapes Menu Button */}
+          <button
+            onClick={() => setIsShapesMenuOpen(true)}
+            className={`p-2 rounded-xl text-xs font-semibold transition active:scale-95 flex items-center gap-1.5 ${
+              isShapesMenuOpen
+                ? 'bg-blue-600 text-white shadow-md'
+                : 'text-stone-700 dark:text-stone-200 bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700'
+            }`}
+            title="Geometrische Figuren & Formen Auswahl öffnen (Rechteck, Abgerundet, Kreis, Dreieck)"
+          >
+            <Shapes className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            <span className="font-semibold">Formen</span>
+          </button>
+
+          {/* Direct 1-Tap Shape Buttons */}
+          <button
+            onClick={() => handleAddShape('rectangle')}
+            className="p-2 rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition active:scale-95"
+            title="Rechteck sofort einfügen"
+          >
+            <Square className="w-4 h-4 text-blue-600" />
+          </button>
+
+          <button
+            onClick={() => handleAddShape('circle')}
+            className="p-2 rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition active:scale-95"
+            title="Kreis / Ellipse sofort einfügen"
+          >
+            <Circle className="w-4 h-4 text-emerald-600" />
+          </button>
+
+          <button
+            onClick={() => handleAddShape('triangle')}
+            className="p-2 rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition active:scale-95"
+            title="Dreieck sofort einfügen"
+          >
+            <Triangle className="w-4 h-4 text-amber-600" />
+          </button>
+
           {/* Lineal */}
           <button
             onClick={() => setIsLinealVisible(!isLinealVisible)}
@@ -888,10 +1065,35 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
+        onTouchStart={handleTouchStartContainer}
+        onTouchMove={handleTouchMoveContainer}
+        onTouchEnd={handleTouchEndContainer}
+        onWheel={handleWheelContainer}
         onClick={() => setSelectedElementId(null)}
         className="flex-1 overflow-y-auto overflow-x-auto p-4 sm:p-8 flex flex-col items-center gap-12 touch-pan-x touch-pan-y scroll-smooth relative"
       >
-        {pages.map((page, index) => {
+        {/* Scaled Page Container for Zoom & Smooth Scrolling */}
+        <div
+          style={{
+            width: `${Math.max(pageWidth * zoom + 32, pageWidth)}px`,
+            minHeight: `${pages.length * (pageHeight * zoom + 48) + 140}px`,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            transformOrigin: 'top center',
+            transition: 'width 0.15s ease-out, min-height 0.15s ease-out',
+          }}
+        >
+          <div
+            style={{
+              transform: `scale(${zoom})`,
+              transformOrigin: 'top center',
+              width: `${pageWidth}px`,
+              transition: 'transform 0.1s ease-out',
+            }}
+            className="flex flex-col items-center gap-14"
+          >
+            {pages.map((page, index) => {
           const isCurrentActive = index === currentPageIndex;
 
           return (
@@ -1000,6 +1202,40 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                 />
               ))}
 
+              {/* Layer 4: Interactive Shapes on this page (Rectangle, Rounded, Circle, Triangle) */}
+              {(page.shapes || []).map((sh) => (
+                <PageShape
+                  key={sh.id}
+                  shape={sh}
+                  isMoveMode={activeTool === 'pan' || selectedElementId === sh.id}
+                  isSelected={selectedElementId === sh.id}
+                  onSelect={() => {
+                    if (activeTool === 'fill') {
+                      // Fast fill shape with active strokeColor
+                      const nextShapes = (page.shapes || []).map((s) => (s.id === sh.id ? { ...s, fillColor: strokeColor } : s));
+                      const updatedPage = { ...page, shapes: nextShapes };
+                      setPages((prev) => prev.map((p, idx) => (idx === index ? updatedPage : p)));
+                      triggerAutoSave(updatedPage);
+                    } else {
+                      setSelectedElementId(sh.id);
+                      setActiveTool('pan');
+                    }
+                  }}
+                  onUpdate={(updated) => {
+                    const nextShapes = (page.shapes || []).map((s) => (s.id === updated.id ? updated : s));
+                    const updatedPage = { ...page, shapes: nextShapes };
+                    setPages((prev) => prev.map((p, idx) => (idx === index ? updatedPage : p)));
+                    triggerAutoSave(updatedPage);
+                  }}
+                  onDelete={() => {
+                    const nextShapes = (page.shapes || []).filter((s) => s.id !== sh.id);
+                    const updatedPage = { ...page, shapes: nextShapes };
+                    setPages((prev) => prev.map((p, idx) => (idx === index ? updatedPage : p)));
+                    triggerAutoSave(updatedPage);
+                  }}
+                />
+              ))}
+
               {/* Geodreieck Overlay mounted on current active page */}
               {isCurrentActive && (
                 <Geodreieck
@@ -1030,7 +1266,61 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
             <span>Nächste Seite hinzufügen</span>
           </button>
         </div>
+          </div>
+        </div>
       </div>
+
+      {/* FLOATING ZOOM CONTROLS (Pinch, Zoom in, Zoom out, Reset, Fit Width) */}
+      <div className="fixed bottom-5 right-5 z-40 flex items-center bg-white/95 dark:bg-stone-900/95 backdrop-blur-md rounded-2xl shadow-xl border border-stone-200 dark:border-stone-700 p-1 text-stone-700 dark:text-stone-200 select-none">
+        {/* Zoom Out Button */}
+        <button
+          onClick={handleZoomOut}
+          disabled={zoom <= 0.4}
+          className="p-2 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-30 transition active:scale-95"
+          title="Verkleinern (-15%)"
+        >
+          <ZoomOut className="w-4 h-4" />
+        </button>
+
+        {/* Current Zoom Percentage (Click to Reset to 100%) */}
+        <button
+          onClick={handleZoomReset}
+          className="px-2.5 py-1 text-xs font-bold font-mono hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg transition"
+          title="Klicken zum Zurücksetzen auf 100%"
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+
+        {/* Zoom In Button */}
+        <button
+          onClick={handleZoomIn}
+          disabled={zoom >= 2.5}
+          className="p-2 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-30 transition active:scale-95"
+          title="Vergrößern (+15%)"
+        >
+          <ZoomIn className="w-4 h-4" />
+        </button>
+
+        <div className="h-4 w-px bg-stone-200 dark:bg-stone-700 mx-1" />
+
+        {/* Fit Width Button */}
+        <button
+          onClick={handleZoomFitWidth}
+          className="p-2 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 text-blue-600 dark:text-blue-400 transition active:scale-95 flex items-center gap-1 text-[11px] font-semibold"
+          title="Optimal an Bildschirmbreite anpassen"
+        >
+          <Scan className="w-4 h-4" />
+          <span className="hidden md:inline">Breite</span>
+        </button>
+      </div>
+
+      {/* GEOMETRIC SHAPES SELECTION MODAL */}
+      <ShapesModal
+        isOpen={isShapesMenuOpen}
+        onClose={() => setIsShapesMenuOpen(false)}
+        onAddShape={handleAddShape}
+        currentStrokeColor={strokeColor}
+      />
 
       {/* IN-APP DELETE PAGE CONFIRMATION MODAL */}
       {isDeletePageModalOpen && activePage && (

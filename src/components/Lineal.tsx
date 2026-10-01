@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { RotateCw, X } from 'lucide-react';
+import { RotateCw, X, Move } from 'lucide-react';
 
 interface LinealProps {
   isVisible: boolean;
@@ -7,84 +7,98 @@ interface LinealProps {
 }
 
 export const Lineal: React.FC<LinealProps> = ({ isVisible, onClose }) => {
-  const [position, setPosition] = useState({ x: 260, y: 160 });
+  const [position, setPosition] = useState({ x: 300, y: 200 });
   const [rotation, setRotation] = useState(0);
 
-  const isDraggingRef = useRef(false);
-  const isRotatingRef = useRef(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const rotateStartRef = useRef({ angle: 0, startMouseAngle: 0 });
 
   if (!isVisible) return null;
 
-  // Move
+  // Move Drag with Window Listeners
   const handleMovePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
-    isDraggingRef.current = true;
+    e.preventDefault();
+
     dragStartRef.current = {
       x: e.clientX - position.x,
       y: e.clientY - position.y,
     };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+
+    const handleWindowMove = (moveEv: PointerEvent) => {
+      moveEv.preventDefault();
+      setPosition({
+        x: Math.round(moveEv.clientX - dragStartRef.current.x),
+        y: Math.round(moveEv.clientY - dragStartRef.current.y),
+      });
+    };
+
+    const handleWindowUp = () => {
+      window.removeEventListener('pointermove', handleWindowMove);
+      window.removeEventListener('pointerup', handleWindowUp);
+      window.removeEventListener('pointercancel', handleWindowUp);
+    };
+
+    window.addEventListener('pointermove', handleWindowMove, { passive: false });
+    window.addEventListener('pointerup', handleWindowUp);
+    window.addEventListener('pointercancel', handleWindowUp);
   };
 
-  const handleMovePointerMove = (e: React.PointerEvent) => {
-    if (!isDraggingRef.current) return;
-    setPosition({
-      x: e.clientX - dragStartRef.current.x,
-      y: e.clientY - dragStartRef.current.y,
-    });
-  };
-
-  const handleMovePointerUp = (e: React.PointerEvent) => {
-    isDraggingRef.current = false;
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
-  };
-
-  // Rotate
+  // Rotate Drag with Window Listeners
   const handleRotatePointerDown = (e: React.PointerEvent) => {
     e.stopPropagation();
-    isRotatingRef.current = true;
+    e.preventDefault();
+
     const dx = e.clientX - position.x;
     const dy = e.clientY - position.y;
     const currentAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
+
     rotateStartRef.current = {
       angle: rotation,
       startMouseAngle: currentAngle,
     };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  };
 
-  const handleRotatePointerMove = (e: React.PointerEvent) => {
-    if (!isRotatingRef.current) return;
-    const dx = e.clientX - position.x;
-    const dy = e.clientY - position.y;
-    const currentAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
-    const angleDiff = currentAngle - rotateStartRef.current.startMouseAngle;
-    let newRotation = (rotateStartRef.current.angle + angleDiff) % 360;
+    const handleWindowRotate = (moveEv: PointerEvent) => {
+      moveEv.preventDefault();
+      const moveDx = moveEv.clientX - position.x;
+      const moveDy = moveEv.clientY - position.y;
+      const angle = (Math.atan2(moveDy, moveDx) * 180) / Math.PI;
+      const angleDiff = angle - rotateStartRef.current.startMouseAngle;
+      let newRotation = (rotateStartRef.current.angle + angleDiff) % 360;
+      if (newRotation < 0) newRotation += 360;
 
-    // Snap to 0, 45, 90, 180
-    const snapAngles = [0, 45, 90, 135, 180, 225, 270, 315];
-    for (const snap of snapAngles) {
-      if (Math.abs(newRotation - snap) < 2) {
-        newRotation = snap;
-        break;
+      // Magnetic snap
+      const snapAngles = [0, 30, 45, 60, 90, 120, 135, 150, 180, 210, 225, 240, 270, 315, 360];
+      for (const snap of snapAngles) {
+        if (Math.abs(newRotation - snap) < 3.5 || Math.abs(newRotation - (snap - 360)) < 3.5) {
+          newRotation = snap === 360 ? 0 : snap;
+          break;
+        }
       }
-    }
-    setRotation(Math.round(newRotation));
+      setRotation(Math.round(newRotation));
+    };
+
+    const handleWindowRotateUp = () => {
+      window.removeEventListener('pointermove', handleWindowRotate);
+      window.removeEventListener('pointerup', handleWindowRotateUp);
+      window.removeEventListener('pointercancel', handleWindowRotateUp);
+    };
+
+    window.addEventListener('pointermove', handleWindowRotate, { passive: false });
+    window.addEventListener('pointerup', handleWindowRotateUp);
+    window.addEventListener('pointercancel', handleWindowRotateUp);
   };
 
-  const handleRotatePointerUp = (e: React.PointerEvent) => {
-    isRotatingRef.current = false;
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {}
+  const handleStepRotate = (delta: number) => {
+    setRotation(prev => {
+      let next = (prev + delta) % 360;
+      if (next < 0) next += 360;
+      return next;
+    });
   };
 
   const totalLength = 400; // in px
-  const rulerHeight = 64; // in px
+  const rulerHeight = 64;  // in px
   const cmCount = 15;
   const cmPixel = totalLength / cmCount; // ~26.6px per cm
 
@@ -106,7 +120,7 @@ export const Lineal: React.FC<LinealProps> = ({ isVisible, onClose }) => {
 
   return (
     <div
-      className="absolute select-none pointer-events-none z-30"
+      className="absolute select-none pointer-events-none z-30 touch-none"
       style={{
         left: `${position.x}px`,
         top: `${position.y}px`,
@@ -114,20 +128,18 @@ export const Lineal: React.FC<LinealProps> = ({ isVisible, onClose }) => {
         transformOrigin: 'center center',
       }}
     >
-      <div className="relative" style={{ width: `${totalLength + 40}px`, height: `${rulerHeight + 20}px` }}>
+      <div className="relative touch-none" style={{ width: `${totalLength + 40}px`, height: `${rulerHeight + 20}px` }}>
         {/* SVG Ruler */}
         <svg
           viewBox={`0 0 ${totalLength + 40} ${rulerHeight + 20}`}
-          className="w-full h-full drop-shadow-xl overflow-visible pointer-events-auto cursor-move"
+          className="w-full h-full drop-shadow-2xl overflow-visible pointer-events-auto cursor-move touch-none"
           onPointerDown={handleMovePointerDown}
-          onPointerMove={handleMovePointerMove}
-          onPointerUp={handleMovePointerUp}
         >
           <defs>
             <linearGradient id="rulerWood" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stop-color="#fef3c7" />
-              <stop offset="50%" stop-color="#fde68a" />
-              <stop offset="100%" stop-color="#fcd34d" />
+              <stop offset="0%" stopColor="#fef3c7" />
+              <stop offset="50%" stopColor="#fde68a" />
+              <stop offset="100%" stopColor="#fcd34d" />
             </linearGradient>
           </defs>
 
@@ -137,10 +149,10 @@ export const Lineal: React.FC<LinealProps> = ({ isVisible, onClose }) => {
             y="10"
             width={totalLength + 20}
             height={rulerHeight}
-            rx="6"
+            rx="8"
             fill="url(#rulerWood)"
             stroke="#b45309"
-            stroke-width="1.5"
+            strokeWidth="1.5"
           />
 
           {/* Bevel highlight */}
@@ -150,8 +162,8 @@ export const Lineal: React.FC<LinealProps> = ({ isVisible, onClose }) => {
             x2={totalLength + 28}
             y2="12"
             stroke="#ffffff"
-            stroke-width="1"
-            stroke-opacity="0.8"
+            strokeWidth="1"
+            strokeOpacity="0.8"
           />
 
           {/* Scale Ticks along top edge (y=10) */}
@@ -163,7 +175,7 @@ export const Lineal: React.FC<LinealProps> = ({ isVisible, onClose }) => {
                 x2={t.x + 20}
                 y2={10 + t.height}
                 stroke="#78350f"
-                stroke-width={t.isCm ? "1.2" : "0.7"}
+                strokeWidth={t.isCm ? '1.2' : '0.7'}
               />
               {t.label && (
                 <text
@@ -192,27 +204,53 @@ export const Lineal: React.FC<LinealProps> = ({ isVisible, onClose }) => {
             fill="#92400e"
             textAnchor="middle"
           >
-            SCHUL-LINEAL 15 CM
+            SCHUL-LINEAL 15 CM • {rotation}°
           </text>
         </svg>
 
+        {/* Center Move Grip */}
+        <div
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-amber-600 text-white shadow-md flex items-center justify-center cursor-move pointer-events-auto touch-none border-2 border-white hover:scale-105 transition"
+          onPointerDown={handleMovePointerDown}
+          title="Lineal verschieben"
+        >
+          <Move className="w-4 h-4" />
+        </div>
+
         {/* Rotate & Close Controls */}
-        <div className="absolute top-0 right-0 flex items-center gap-1 -translate-y-6 pointer-events-auto">
-          <div
-            className="w-7 h-7 rounded-full bg-amber-500 hover:bg-amber-600 text-white shadow-md flex items-center justify-center cursor-grab active:cursor-grabbing transition"
-            onPointerDown={handleRotatePointerDown}
-            onPointerMove={handleRotatePointerMove}
-            onPointerUp={handleRotatePointerUp}
-            title="Lineal drehen"
+        <div className="absolute top-0 right-2 flex items-center gap-1.5 -translate-y-8 pointer-events-auto touch-none">
+          {/* Quick angle step buttons */}
+          <button
+            onClick={() => handleStepRotate(45)}
+            className="px-2 py-1 rounded-lg bg-white/90 dark:bg-stone-800/90 text-stone-800 dark:text-stone-200 border border-stone-300 dark:border-stone-700 shadow-md text-[10px] font-bold hover:bg-stone-100"
+            title="+45° drehen"
           >
-            <RotateCw className="w-3.5 h-3.5" />
+            +45°
+          </button>
+          <button
+            onClick={() => setRotation(0)}
+            className="px-2 py-1 rounded-lg bg-white/90 dark:bg-stone-800/90 text-stone-800 dark:text-stone-200 border border-stone-300 dark:border-stone-700 shadow-md text-[10px] font-bold hover:bg-stone-100"
+            title="Auf 0° zurücksetzen"
+          >
+            0°
+          </button>
+
+          {/* Rotate Dial Handle */}
+          <div
+            className="w-8 h-8 rounded-full bg-amber-500 hover:bg-amber-600 text-white shadow-lg flex items-center justify-center cursor-grab active:cursor-grabbing transition border-2 border-white"
+            onPointerDown={handleRotatePointerDown}
+            title="Lineal drehen (anfassen und ziehen)"
+          >
+            <RotateCw className="w-4 h-4" />
           </div>
+
+          {/* Close button */}
           <button
             onClick={onClose}
-            className="w-7 h-7 rounded-full bg-stone-700/80 hover:bg-stone-900 text-white shadow-md flex items-center justify-center transition"
+            className="w-8 h-8 rounded-full bg-stone-700/80 hover:bg-stone-900 text-white shadow-lg flex items-center justify-center transition border-2 border-white"
             title="Lineal schließen"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
       </div>
