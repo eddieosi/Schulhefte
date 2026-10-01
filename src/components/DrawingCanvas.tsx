@@ -182,6 +182,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctx.lineJoin = 'round';
     }
 
+    if (stroke.isDotted) {
+      ctx.setLineDash([stroke.size * 1.5, stroke.size * 2.2]);
+    } else {
+      ctx.setLineDash([]);
+    }
+
     if (stroke.isStraight && points.length >= 2) {
       // Straight line
       const first = points[0];

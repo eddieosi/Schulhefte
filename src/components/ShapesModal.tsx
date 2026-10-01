@@ -15,7 +15,7 @@ import {
 interface ShapesModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAddShape: (type: ShapeType, strokeColor?: string, fillColor?: string) => void;
+  onAddShape: (type: ShapeType, strokeColor?: string, fillColor?: string, strokeWidth?: number) => void;
   currentStrokeColor: string;
 }
 
@@ -26,6 +26,7 @@ export const ShapesModal: React.FC<ShapesModalProps> = ({
   currentStrokeColor,
 }) => {
   const [selectedColor, setSelectedColor] = useState(currentStrokeColor || '#1e40af');
+  const [selectedStrokeWidth, setSelectedStrokeWidth] = useState(3);
   const [fillMode, setFillMode] = useState<'transparent' | 'match' | 'custom'>('transparent');
   const [customFillColor, setCustomFillColor] = useState('#bfdbfe');
 
@@ -38,7 +39,7 @@ export const ShapesModal: React.FC<ShapesModalProps> = ({
     } else if (fillMode === 'custom') {
       finalFill = customFillColor;
     }
-    onAddShape(type, selectedColor, finalFill);
+    onAddShape(type, selectedColor, finalFill, selectedStrokeWidth);
     onClose();
   };
 
@@ -174,6 +175,26 @@ export const ShapesModal: React.FC<ShapesModalProps> = ({
                 className="w-6 h-6 rounded-full border-none cursor-pointer bg-transparent"
                 title="Eigene Farbe wählen"
               />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-2 border-t border-stone-200 dark:border-stone-700">
+            <span className="font-semibold text-stone-700 dark:text-stone-300">Strichstärke:</span>
+            <div className="flex items-center gap-1.5">
+              {[2, 3, 5, 8].map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => setSelectedStrokeWidth(w)}
+                  className={`px-2.5 py-1 rounded-lg border text-xs font-bold transition ${
+                    selectedStrokeWidth === w
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                      : 'bg-white dark:bg-stone-700 border-stone-300 dark:border-stone-600 text-stone-600 dark:text-stone-300 hover:bg-stone-100'
+                  }`}
+                >
+                  {w}px
+                </button>
+              ))}
             </div>
           </div>
 

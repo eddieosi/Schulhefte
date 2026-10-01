@@ -8,7 +8,7 @@ export type RulingType =
   | 'vokabeln'      // 2 Spalten Vokabelheft mit Trennlinie
   | 'noten';        // Notenlinien
 
-export type ToolType = 'pen' | 'pencil' | 'brush' | 'highlighter' | 'eraser' | 'text' | 'image' | 'pan' | 'fill' | 'shape';
+export type ToolType = 'pen' | 'pencil' | 'brush' | 'highlighter' | 'eraser' | 'text' | 'image' | 'pan' | 'fill' | 'shape' | 'laser' | 'table';
 
 export type ShapeType = 'rectangle' | 'rounded_rectangle' | 'circle' | 'triangle';
 
@@ -22,6 +22,23 @@ export interface ShapeElement {
   strokeColor: string;
   strokeWidth: number;
   fillColor: string;
+}
+
+export interface PageGroupTag {
+  label: string;
+  color: string;
+}
+
+export interface TableElement {
+  id: string;
+  x: number;
+  y: number;
+  rows: number;
+  cols: number;
+  headers?: string[];
+  data: string[][];
+  isVocabMode?: boolean;
+  revealedCells?: Record<string, boolean>;
 }
 
 export interface Point {
@@ -38,6 +55,7 @@ export interface Stroke {
   opacity?: number;
   points: Point[];
   isStraight?: boolean;
+  isDotted?: boolean;
 }
 
 export interface TextBox {
@@ -71,6 +89,8 @@ export interface Page {
   textboxes: TextBox[];
   images: ImageElement[];
   shapes?: ShapeElement[];
+  tables?: TableElement[];
+  groupTag?: PageGroupTag;
   ocrText?: string;
   updatedAt: string;
 }

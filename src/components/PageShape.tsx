@@ -190,8 +190,9 @@ export const PageShape: React.FC<PageShapeProps> = ({
       {/* Floating Control Bar when Selected */}
       {isSelected && (
         <div
-          className="absolute -top-12 left-0 right-0 min-h-9 flex items-center justify-between bg-white/95 dark:bg-stone-900/95 backdrop-blur-md text-stone-800 dark:text-stone-200 border border-stone-200 dark:border-stone-700 rounded-xl px-2.5 py-1 text-xs shadow-xl z-50 select-none touch-none gap-2 flex-wrap"
+          className="absolute -top-12 left-0 right-0 min-h-9 flex items-center justify-between bg-white/95 dark:bg-stone-900/95 backdrop-blur-md text-stone-800 dark:text-stone-200 border border-stone-200 dark:border-stone-700 rounded-xl px-2.5 py-1 text-xs shadow-xl z-50 select-none gap-2 flex-wrap"
           onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
         >
           {/* Dedicated Drag Handle */}
           <div
@@ -215,18 +216,23 @@ export const PageShape: React.FC<PageShapeProps> = ({
               />
             </div>
 
-            {/* Stroke Width Selector */}
-            <select
-              value={shape.strokeWidth}
-              onChange={(e) => onUpdate({ ...shape, strokeWidth: Number(e.target.value) })}
-              className="bg-stone-100 dark:bg-stone-800 text-[11px] px-1.5 py-0.5 rounded-lg border border-stone-200 dark:border-stone-700 outline-none cursor-pointer"
-              title="Linienstärke"
-            >
-              <option value={2}>2 px</option>
-              <option value={3}>3 px</option>
-              <option value={5}>5 px</option>
-              <option value={8}>8 px</option>
-            </select>
+            {/* Stroke Width Buttons & Selector */}
+            <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800 p-0.5 rounded-lg border border-stone-200 dark:border-stone-700" title="Linienstärke wählen">
+              {[2, 3, 5, 8].map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  onClick={() => onUpdate({ ...shape, strokeWidth: w })}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-bold transition ${
+                    (shape.strokeWidth || 3) === w
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700'
+                  }`}
+                >
+                  {w}px
+                </button>
+              ))}
+            </div>
 
             {/* Fill color picker */}
             <div className="flex items-center gap-1" title="Füllfarbe">

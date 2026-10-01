@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Notebook, Page, Stroke, TextBox, ImageElement, ShapeElement, ShapeType, ToolType, RulingType } from '../types/notebook';
+import { Notebook, Page, Stroke, Point, TextBox, ImageElement, ShapeElement, ShapeType, ToolType, RulingType, TableElement, PageGroupTag } from '../types/notebook';
 import { PageRuling } from './PageRuling';
 import { DrawingCanvas } from './DrawingCanvas';
 import { PageTextBox } from './PageTextBox';
@@ -8,6 +8,10 @@ import { PageShape } from './PageShape';
 import { ShapesModal } from './ShapesModal';
 import { Geodreieck } from './Geodreieck';
 import { Lineal } from './Lineal';
+import { Zirkel } from './Zirkel';
+import { LaserPointerCanvas } from './LaserPointerCanvas';
+import { PageTable } from './PageTable';
+import { PageGroupModal } from './PageGroupModal';
 import { exportNotebookToPDF } from '../utils/pdfExport';
 import { api } from '../services/api';
 import {
@@ -28,6 +32,7 @@ import {
   Highlighter,
   Ruler,
   Compass,
+  CircleDot,
   Minus,
   Moon,
   Loader2,
@@ -43,6 +48,10 @@ import {
   ZoomIn,
   ZoomOut,
   Scan,
+  Table as TableIcon,
+  Radio,
+  Tag,
+  Bookmark,
   X
 } from 'lucide-react';
 
@@ -80,7 +89,11 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
   // Overlays
   const [isGeodreieckVisible, setIsGeodreieckVisible] = useState(false);
   const [isLinealVisible, setIsLinealVisible] = useState(false);
+  const [isZirkelVisible, setIsZirkelVisible] = useState(false);
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+
+  // Page Group Tag Modal State
+  const [groupModalPageIndex, setGroupModalPageIndex] = useState<number | null>(null);
 
   // Delete Page Modal State (avoids blocked window.confirm in iframes)
   const [isDeletePageModalOpen, setIsDeletePageModalOpen] = useState(false);
@@ -407,10 +420,11 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
   };
 
   // Add Geometric Shape to active page
-  const handleAddShape = (type: ShapeType, customStrokeColor?: string, customFillColor?: string) => {
+  const handleAddShape = (type: ShapeType, customStrokeColor?: string, customFillColor?: string, customStrokeWidth?: number) => {
     if (!activePage) return;
     const finalStroke = customStrokeColor || strokeColor || '#1e40af';
     const finalFill = customFillColor !== undefined ? customFillColor : 'transparent';
+    const finalWidth = customStrokeWidth !== undefined ? customStrokeWidth : 3;
     const newShape: ShapeElement = {
       id: 'shape-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       type,
@@ -419,7 +433,7 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
       width: type === 'circle' ? 160 : type === 'triangle' ? 180 : 200,
       height: type === 'circle' ? 160 : type === 'triangle' ? 160 : 120,
       strokeColor: finalStroke,
-      strokeWidth: 3,
+      strokeWidth: finalWidth,
       fillColor: finalFill,
     };
 
@@ -432,6 +446,90 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
     setSelectedElementId(newShape.id);
     setIsShapesMenuOpen(false);
     triggerAutoSave(updated);
+  };
+
+  // Draw Circle using Zirkel
+  const handleDrawZirkelCircle = (params: {
+    cx: number;
+    cy: number;
+    radius: number;
+    strokeStyle: 'solid' | 'dotted';
+    strokeWidth: number;
+    color: string;
+  }) => {
+    if (!activePage) return;
+    const { cx, cy, radius, strokeStyle, strokeWidth, color } = params;
+
+    // Generate circle points around the needle
+    const points: Point[] = [];
+    const steps = 72; // every 5 degrees
+    for (let i = 0; i <= steps; i++) {
+      const angle = (i * 2 * Math.PI) / steps;
+      points.push({
+        x: Math.round(cx + radius * Math.cos(angle)),
+        y: Math.round(cy + radius * Math.sin(angle)),
+        pressure: 0.6,
+      });
+    }
+
+    const circleStroke: Stroke = {
+      id: 'stroke-circle-' + Date.now(),
+      tool: 'pen',
+      color,
+      size: strokeWidth,
+      isStraight: false,
+      isDotted: strokeStyle === 'dotted',
+      points,
+    };
+
+    const updatedStrokes = [...activePage.strokes, circleStroke];
+    const updatedPage = { ...activePage, strokes: updatedStrokes };
+    setPages(prev => prev.map(p => p.id === activePage.id ? updatedPage : p));
+    triggerAutoSave(updatedPage);
+  };
+
+  // Add Table to active page
+  const handleAddTable = () => {
+    if (!activePage) return;
+    const newTable: TableElement = {
+      id: 'table-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      x: 120,
+      y: 200,
+      rows: 4,
+      cols: 2,
+      headers: ['Vokabel / Begriff', 'Übersetzung / Bedeutung'],
+      data: [
+        ['apple', 'Apfel'],
+        ['book', 'Buch'],
+        ['school', 'Schule'],
+        ['pencil', 'Bleistift'],
+      ],
+      isVocabMode: false,
+    };
+
+    const updated = {
+      ...activePage,
+      tables: [...(activePage.tables || []), newTable],
+    };
+    setPages(prev => prev.map(p => p.id === activePage.id ? updated : p));
+    setActiveTool('pan');
+    setSelectedElementId(newTable.id);
+    triggerAutoSave(updated);
+  };
+
+  // Save Page Group Tag
+  const handleSaveGroupTag = (tag: PageGroupTag | undefined) => {
+    if (groupModalPageIndex === null) return;
+    const targetPage = pages[groupModalPageIndex];
+    if (!targetPage) return;
+
+    const updatedPage: Page = {
+      ...targetPage,
+      groupTag: tag,
+    };
+
+    setPages(prev => prev.map((p, idx) => idx === groupModalPageIndex ? updatedPage : p));
+    triggerAutoSave(updatedPage);
   };
 
   // Add Image to active page
@@ -621,9 +719,9 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
               className="opacity-0 absolute w-20 cursor-pointer"
               title="Zu Seite springen"
             >
-              {pages.map((_, i) => (
+              {pages.map((p, i) => (
                 <option key={i} value={i}>
-                  Seite {i + 1}
+                  Seite {i + 1} {p.groupTag ? `• [${p.groupTag.label}]` : ''}
                 </option>
               ))}
             </select>
@@ -863,6 +961,22 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
           >
             <PaintBucket className="w-4 h-4" />
           </button>
+
+          {/* Laserpointer */}
+          <button
+            onClick={() => {
+              handleSelectTool('laser');
+              setSelectedElementId(null);
+            }}
+            className={`p-2 rounded-xl text-xs font-semibold transition ${
+              activeTool === 'laser'
+                ? 'bg-red-600 text-white shadow-md shadow-red-500/30 ring-2 ring-red-400'
+                : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+            }`}
+            title="Laserpointer: Temporärer roter Leuchtstrahl zum Zeigen (verschwindet automatisch nach 1.5s)"
+          >
+            <Radio className="w-4 h-4 text-red-500" />
+          </button>
         </div>
 
         {/* Geometrie & Instrumente */}
@@ -930,6 +1044,28 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
             title="Deutsches Geodreieck mit Winkel-, Kanten- und Millimeterskala ein-/ausblenden"
           >
             <Compass className="w-4 h-4" />
+          </button>
+
+          {/* Schulzirkel */}
+          <button
+            onClick={() => setIsZirkelVisible(!isZirkelVisible)}
+            className={`p-2 rounded-xl text-xs font-semibold transition ${
+              isZirkelVisible
+                ? 'bg-blue-600 text-white shadow-md'
+                : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+            }`}
+            title="Schulzirkel ein-/ausblenden (Kreise mit Radius in mm ziehen)"
+          >
+            <CircleDot className="w-4 h-4" />
+          </button>
+
+          {/* Tabelle einfügen */}
+          <button
+            onClick={handleAddTable}
+            className="p-2 rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+            title="Tabelle (inkl. Vokabel-Trainingsmodus) einfügen"
+          >
+            <TableIcon className="w-4 h-4" />
           </button>
 
           {/* Textbox einfügen */}
@@ -1126,7 +1262,43 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                 <span className="text-[11px] font-medium text-stone-500 dark:text-stone-400 capitalize">
                   Lineatur: {page.ruling}
                 </span>
+
+                {/* Page Group Tag Button */}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setGroupModalPageIndex(index);
+                  }}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-semibold transition active:scale-95 ${
+                    page.groupTag
+                      ? 'text-white shadow-sm'
+                      : 'bg-stone-200 dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-300 dark:hover:bg-stone-700'
+                  }`}
+                  style={{ backgroundColor: page.groupTag ? page.groupTag.color : undefined }}
+                  title="Seitengruppierung (farbliche & textuelle Markierung) bearbeiten"
+                >
+                  <Tag className="w-3 h-3" />
+                  <span>{page.groupTag ? page.groupTag.label : '+ Gruppe'}</span>
+                </button>
               </div>
+
+              {/* Bookmark Tab on the right edge of page */}
+              {page.groupTag && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setGroupModalPageIndex(index);
+                  }}
+                  className="absolute -right-3 top-14 transform translate-x-full z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-r-2xl text-white text-xs font-bold shadow-xl border-l-2 border-white/50 hover:brightness-110 active:scale-95 transition"
+                  style={{ backgroundColor: page.groupTag.color }}
+                  title={`Gruppe: ${page.groupTag.label} (klicken zum Bearbeiten)`}
+                >
+                  <Bookmark className="w-3.5 h-3.5 fill-current" />
+                  <span>{page.groupTag.label}</span>
+                </button>
+              )}
 
               {/* Ruling Layer */}
               <PageRuling
@@ -1175,6 +1347,13 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                 onStrokesChange={(newStrokes) => handlePageStrokesChange(index, newStrokes)}
                 onStartDrawing={() => setSelectedElementId(null)}
                 isDarkMode={darkPaper}
+              />
+
+              {/* Laser Pointer Temporary Overlay */}
+              <LaserPointerCanvas
+                width={pageWidth}
+                height={pageHeight}
+                isActive={activeTool === 'laser' && isCurrentActive}
               />
 
               {/* Layer 3: Interactive TextBoxes on this page (Over drawings and images, 100% transparent) */}
@@ -1236,6 +1415,32 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                 />
               ))}
 
+              {/* Layer 5: Interactive Tables on this page (with vocabulary practice mode) */}
+              {(page.tables || []).map((tbl) => (
+                <PageTable
+                  key={tbl.id}
+                  table={tbl}
+                  isSelected={selectedElementId === tbl.id}
+                  isMoveMode={activeTool === 'pan' || selectedElementId === tbl.id}
+                  onSelect={() => {
+                    setSelectedElementId(tbl.id);
+                    setActiveTool('pan');
+                  }}
+                  onUpdate={(updated) => {
+                    const nextTables = (page.tables || []).map((t) => (t.id === updated.id ? updated : t));
+                    const updatedPage = { ...page, tables: nextTables };
+                    setPages((prev) => prev.map((p, idx) => (idx === index ? updatedPage : p)));
+                    triggerAutoSave(updatedPage);
+                  }}
+                  onDelete={() => {
+                    const nextTables = (page.tables || []).filter((t) => t.id !== tbl.id);
+                    const updatedPage = { ...page, tables: nextTables };
+                    setPages((prev) => prev.map((p, idx) => (idx === index ? updatedPage : p)));
+                    triggerAutoSave(updatedPage);
+                  }}
+                />
+              ))}
+
               {/* Geodreieck Overlay mounted on current active page */}
               {isCurrentActive && (
                 <Geodreieck
@@ -1250,6 +1455,16 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                 <Lineal
                   isVisible={isLinealVisible}
                   onClose={() => setIsLinealVisible(false)}
+                />
+              )}
+
+              {/* Schulzirkel Overlay mounted on current active page */}
+              {isCurrentActive && (
+                <Zirkel
+                  isVisible={isZirkelVisible}
+                  onClose={() => setIsZirkelVisible(false)}
+                  onDrawCircle={handleDrawZirkelCircle}
+                  activeColor={strokeColor}
                 />
               )}
             </div>
@@ -1321,6 +1536,17 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
         onAddShape={handleAddShape}
         currentStrokeColor={strokeColor}
       />
+
+      {/* PAGE GROUPING MODAL */}
+      {groupModalPageIndex !== null && (
+        <PageGroupModal
+          isOpen={groupModalPageIndex !== null}
+          onClose={() => setGroupModalPageIndex(null)}
+          currentTag={pages[groupModalPageIndex]?.groupTag}
+          pageNumber={groupModalPageIndex + 1}
+          onSaveTag={handleSaveGroupTag}
+        />
+      )}
 
       {/* IN-APP DELETE PAGE CONFIRMATION MODAL */}
       {isDeletePageModalOpen && activePage && (
