@@ -69,14 +69,14 @@ export const NotebookCover: React.FC<NotebookCoverProps> = ({
             {notebook.subject || 'Heft'}
           </span>
 
-          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+          <div className="flex items-center gap-1.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity shrink-0">
             {onEdit && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   onEdit(e);
                 }}
-                className="p-1.5 rounded-lg bg-white/20 hover:bg-white/40 text-white transition backdrop-blur-sm"
+                className="p-2 sm:p-1.5 rounded-xl bg-black/50 hover:bg-black/70 text-white transition backdrop-blur-md shadow-md border border-white/20 active:scale-95"
                 title="Heft bearbeiten"
               >
                 <Edit3 className="w-3.5 h-3.5" />
@@ -88,7 +88,7 @@ export const NotebookCover: React.FC<NotebookCoverProps> = ({
                   e.stopPropagation();
                   onDelete(e);
                 }}
-                className="p-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-white transition backdrop-blur-sm"
+                className="p-2 sm:p-1.5 rounded-xl bg-red-600/85 hover:bg-red-600 text-white transition backdrop-blur-md shadow-md border border-red-300/30 active:scale-95"
                 title="Heft löschen"
               >
                 <Trash2 className="w-3.5 h-3.5" />

@@ -351,7 +351,7 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
       </header>
 
       {/* Main Body */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-8 py-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-8 py-6 pb-28">
         {/* Subject Filter & Sort & Add Action bar */}
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 mb-8">
           {/* Filter Pills */}

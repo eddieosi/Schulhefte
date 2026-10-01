@@ -939,10 +939,11 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                 <PageImage
                   key={img.id}
                   image={img}
-                  isMoveMode={activeTool === 'pan'}
-                  isSelected={activeTool === 'pan' && selectedElementId === img.id}
+                  isMoveMode={activeTool === 'pan' || selectedElementId === img.id}
+                  isSelected={selectedElementId === img.id}
                   onSelect={() => {
                     setSelectedElementId(img.id);
+                    setActiveTool('pan');
                   }}
                   onUpdate={(updated) => {
                     const nextImages = page.images.map((i) => (i.id === updated.id ? updated : i));
@@ -982,6 +983,7 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                   isSelected={selectedElementId === tb.id}
                   onSelect={() => {
                     setSelectedElementId(tb.id);
+                    setActiveTool('pan');
                   }}
                   onUpdate={(updated) => {
                     const nextTbs = page.textboxes.map((t) => (t.id === updated.id ? updated : t));
