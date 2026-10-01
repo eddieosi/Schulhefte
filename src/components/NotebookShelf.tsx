@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Notebook, SearchResult, RulingType } from '../types/notebook';
+import { Notebook, SearchResult, RulingType, User } from '../types/notebook';
 import { NotebookCover } from './NotebookCover';
 import { PWAInstallButton } from './PWAInstallButton';
 import { OfflineIndicator } from './OfflineIndicator';
+import { UserManagementModal } from './UserManagementModal';
 import { 
   Plus, 
   Search, 
@@ -14,11 +15,17 @@ import {
   ArrowUpDown,
   X,
   FolderOpen,
-  Edit3
+  Edit3,
+  Users,
+  LogOut,
+  ShieldCheck,
+  User as UserIcon
 } from 'lucide-react';
 import { api } from '../services/api';
 
 interface NotebookShelfProps {
+  currentUser: User;
+  onLogout: () => void;
   notebooks: Notebook[];
   isLoading: boolean;
   isDarkMode: boolean;
@@ -26,11 +33,16 @@ interface NotebookShelfProps {
   onOpenTutorial: () => void;
   onSelectNotebook: (notebookId: string, initialPageId?: string) => void;
   onRefresh: () => void;
+  activeShelfUser?: string;
+  onShelfUserChange?: (username: string) => void;
+  allUsers?: User[];
 }
 
 type SortOption = 'updated_desc' | 'updated_asc' | 'title_asc' | 'title_desc' | 'subject' | 'pages_desc';
 
 export const NotebookShelf: React.FC<NotebookShelfProps> = ({
+  currentUser,
+  onLogout,
   notebooks,
   isLoading,
   isDarkMode,
@@ -38,12 +50,16 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
   onOpenTutorial,
   onSelectNotebook,
   onRefresh,
+  activeShelfUser,
+  onShelfUserChange,
+  allUsers,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [selectedSubject, setSelectedSubject] = useState<string>('Alle');
   const [sortBy, setSortBy] = useState<SortOption>('updated_desc');
+  const [isUserModalOpen, setIsUserModalOpen] = useState(false);
 
   // New Notebook Modal state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -347,6 +363,44 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
           >
             {isDarkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
           </button>
+
+          <div className="h-5 w-px bg-stone-200 dark:bg-stone-800 mx-1 hidden sm:block" />
+
+          {/* Admin User Management Button */}
+          {currentUser.role === 'admin' && (
+            <button
+              onClick={() => setIsUserModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-purple-50 dark:bg-purple-950/50 hover:bg-purple-100 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800 text-xs font-semibold shadow-sm transition active:scale-95"
+              title="Benutzerverwaltung öffnen (Schüler anlegen & verwalten)"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Benutzer</span>
+            </button>
+          )}
+
+          {/* User Info Chip */}
+          <div className="flex items-center gap-2 pl-1 pr-2.5 py-1 rounded-xl bg-stone-100 dark:bg-stone-800/80 border border-stone-200 dark:border-stone-700 select-none">
+            <div className="w-6 h-6 rounded-lg bg-blue-600 text-white font-bold text-[11px] flex items-center justify-center shrink-0">
+              {currentUser.displayName.charAt(0).toUpperCase() || currentUser.username.charAt(0).toUpperCase()}
+            </div>
+            <div className="flex flex-col">
+              <span className="text-[11px] font-bold text-stone-800 dark:text-stone-200 max-w-[80px] sm:max-w-[120px] truncate leading-tight">
+                {currentUser.displayName}
+              </span>
+              <span className="text-[9px] text-stone-400 leading-none">
+                {currentUser.role === 'admin' ? 'Admin' : 'Schüler'}
+              </span>
+            </div>
+          </div>
+
+          {/* Logout Button */}
+          <button
+            onClick={onLogout}
+            className="p-2 rounded-xl text-stone-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition active:scale-95"
+            title="Abmelden"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
         </div>
       </header>
 
@@ -371,8 +425,28 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
             ))}
           </div>
 
-          {/* Sort Dropdown & New Notebook Button */}
-          <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+          {/* Sort Dropdown, Admin User Switcher & New Notebook Button */}
+          <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end flex-wrap">
+            {/* Admin User Switcher */}
+            {currentUser.role === 'admin' && allUsers && allUsers.length > 1 && (
+              <div className="flex items-center gap-1.5 bg-white dark:bg-stone-900 border border-purple-200 dark:border-purple-800 rounded-xl px-2.5 py-1.5 shadow-sm text-xs">
+                <UserIcon className="w-3.5 h-3.5 text-purple-500" />
+                <label htmlFor="user-select" className="text-stone-500 text-[11px] hidden sm:inline">Benutzer:</label>
+                <select
+                  id="user-select"
+                  value={activeShelfUser || currentUser.username}
+                  onChange={(e) => onShelfUserChange?.(e.target.value)}
+                  className="bg-transparent text-purple-700 dark:text-purple-300 font-semibold outline-none cursor-pointer text-xs"
+                >
+                  {allUsers.map(u => (
+                    <option key={u.id} value={u.username}>
+                      {u.displayName} ({u.username})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             <div className="flex items-center gap-1.5 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-xl px-2.5 py-1.5 shadow-sm text-xs">
               <ArrowUpDown className="w-3.5 h-3.5 text-stone-400" />
               <label htmlFor="sort-select" className="text-stone-500 text-[11px] hidden sm:inline">Sortieren:</label>
@@ -820,6 +894,14 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
           </div>
         </div>
       )}
+
+      {/* USER MANAGEMENT MODAL (ADMIN ONLY) */}
+      <UserManagementModal
+        isOpen={isUserModalOpen}
+        onClose={() => setIsUserModalOpen(false)}
+        currentUser={currentUser}
+        onUsersChanged={onRefresh}
+      />
     </div>
   );
 };

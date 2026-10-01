@@ -1,5 +1,7 @@
-import { Notebook, Page, SearchResult } from '../types/notebook';
+import { Notebook, Page, SearchResult, User } from '../types/notebook';
 
+const STORAGE_KEY_TOKEN = 'schulheft_auth_token';
+const STORAGE_KEY_USER = 'schulheft_auth_user';
 const STORAGE_KEY_NOTEBOOKS = 'schulheft_offline_notebooks';
 const STORAGE_KEY_PAGES = 'schulheft_offline_pages_';
 const STORAGE_KEY_QUEUE = 'schulheft_sync_queue';
@@ -10,6 +12,42 @@ interface SyncTask {
   method: string;
   body: any;
   timestamp: number;
+}
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(STORAGE_KEY_TOKEN);
+}
+
+export function getStoredUser(): User | null {
+  const raw = localStorage.getItem(STORAGE_KEY_USER);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function setAuthSession(token: string, user: User) {
+  localStorage.setItem(STORAGE_KEY_TOKEN, token);
+  localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
+}
+
+export function clearAuthSession() {
+  localStorage.removeItem(STORAGE_KEY_TOKEN);
+  localStorage.removeItem(STORAGE_KEY_USER);
+  localStorage.removeItem(STORAGE_KEY_NOTEBOOKS);
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
 }
 
 // Queue sync helper
@@ -43,7 +81,7 @@ export async function processSyncQueue(): Promise<number> {
     try {
       const res = await fetch(task.url, {
         method: task.method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify(task.body),
       });
       if (res.ok) {
@@ -61,35 +99,138 @@ export async function processSyncQueue(): Promise<number> {
 }
 
 export const api = {
-  // Fetch all notebooks
-  async getNotebooks(): Promise<Notebook[]> {
+  // ================= AUTH =================
+  async login(username: string, password: string): Promise<{ token: string; user: User }> {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Anmeldung fehlgeschlagen');
+    }
+
+    const data = await res.json();
+    setAuthSession(data.token, data.user);
+    return data;
+  },
+
+  async getMe(): Promise<User | null> {
+    const token = getAuthToken();
+    if (!token) return null;
     try {
-      const res = await fetch('/api/notebooks');
+      const res = await fetch('/api/auth/me', {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
-        localStorage.setItem(STORAGE_KEY_NOTEBOOKS, JSON.stringify(data));
+        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(data.user));
+        return data.user;
+      }
+      if (res.status === 401) {
+        clearAuthSession();
+        return null;
+      }
+    } catch (err) {
+      console.warn('getMe network check failed, using stored user:', err);
+    }
+    return getStoredUser();
+  },
+
+  async logout(): Promise<void> {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+    } catch {}
+    clearAuthSession();
+  },
+
+  // ================= USER MANAGEMENT (ADMIN ONLY) =================
+  async getUsers(): Promise<User[]> {
+    const res = await fetch('/api/users', {
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Fehler beim Laden der Benutzerliste');
+    }
+    return await res.json();
+  },
+
+  async createUser(data: { username: string; displayName?: string; password: string; role?: 'admin' | 'user' }): Promise<User> {
+    const res = await fetch('/api/users', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Fehler beim Erstellen des Benutzers');
+    }
+    return await res.json();
+  },
+
+  async updateUser(id: string, updates: { displayName?: string; password?: string; role?: 'admin' | 'user' }): Promise<User> {
+    const res = await fetch(`/api/users/${id}`, {
+      method: 'PUT',
+      headers: authHeaders(),
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Fehler beim Aktualisieren des Benutzers');
+    }
+    return await res.json();
+  },
+
+  async deleteUser(id: string): Promise<boolean> {
+    const res = await fetch(`/api/users/${id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Fehler beim Löschen des Benutzers');
+    }
+    return true;
+  },
+
+  // ================= NOTEBOOKS =================
+  async getNotebooks(targetUser?: string): Promise<Notebook[]> {
+    try {
+      const url = targetUser ? `/api/notebooks?user=${encodeURIComponent(targetUser)}` : '/api/notebooks';
+      const res = await fetch(url, {
+        headers: authHeaders(),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (!targetUser) {
+          localStorage.setItem(STORAGE_KEY_NOTEBOOKS, JSON.stringify(data));
+        }
         return data;
       }
     } catch (err) {
       console.warn('Network offline, using local cached notebooks:', err);
     }
 
-    // Offline fallback
     const local = localStorage.getItem(STORAGE_KEY_NOTEBOOKS);
     return local ? JSON.parse(local) : [];
   },
 
-  // Create notebook
-  async createNotebook(data: Partial<Notebook>): Promise<Notebook> {
+  async createNotebook(data: Partial<Notebook>, targetUser?: string): Promise<Notebook> {
     try {
-      const res = await fetch('/api/notebooks', {
+      const url = targetUser ? `/api/notebooks?user=${encodeURIComponent(targetUser)}` : '/api/notebooks';
+      const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify(data),
       });
       if (res.ok) {
         const created = await res.json();
-        // Update local cache
         const local = await this.getNotebooks();
         localStorage.setItem(STORAGE_KEY_NOTEBOOKS, JSON.stringify([created, ...local]));
         return created;
@@ -98,7 +239,7 @@ export const api = {
       console.warn('Offline create notebook:', err);
     }
 
-    // Offline generation
+    // Offline fallback
     const id = 'nb-off-' + Date.now();
     const created: Notebook = {
       id,
@@ -140,10 +281,11 @@ export const api = {
     return created;
   },
 
-  // Get single notebook
   async getNotebook(id: string): Promise<Notebook | null> {
     try {
-      const res = await fetch(`/api/notebooks/${id}`);
+      const res = await fetch(`/api/notebooks/${id}`, {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         return await res.json();
       }
@@ -155,12 +297,11 @@ export const api = {
     return list.find(n => n.id === id) || null;
   },
 
-  // Update notebook
   async updateNotebook(id: string, updates: Partial<Notebook>): Promise<Notebook> {
     try {
       const res = await fetch(`/api/notebooks/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify(updates),
       });
       if (res.ok) {
@@ -192,10 +333,12 @@ export const api = {
     return updated;
   },
 
-  // Delete notebook
   async deleteNotebook(id: string): Promise<boolean> {
     try {
-      const res = await fetch(`/api/notebooks/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/notebooks/${id}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+      });
       if (res.ok) {
         const list = await this.getNotebooks();
         localStorage.setItem(STORAGE_KEY_NOTEBOOKS, JSON.stringify(list.filter(n => n.id !== id)));
@@ -219,10 +362,12 @@ export const api = {
     return true;
   },
 
-  // Get Page
+  // ================= PAGES =================
   async getPage(notebookId: string, pageId: string): Promise<Page | null> {
     try {
-      const res = await fetch(`/api/notebooks/${notebookId}/pages/${pageId}`);
+      const res = await fetch(`/api/notebooks/${notebookId}/pages/${pageId}`, {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         const page = await res.json();
         localStorage.setItem(STORAGE_KEY_PAGES + notebookId + '_' + pageId, JSON.stringify(page));
@@ -236,15 +381,13 @@ export const api = {
     return local ? JSON.parse(local) : null;
   },
 
-  // Save Page
   async savePage(notebookId: string, page: Page): Promise<Page> {
-    // Immediate save to localStorage
     localStorage.setItem(STORAGE_KEY_PAGES + notebookId + '_' + page.id, JSON.stringify(page));
 
     try {
       const res = await fetch(`/api/notebooks/${notebookId}/pages/${page.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify(page),
       });
       if (res.ok) {
@@ -265,12 +408,11 @@ export const api = {
     return page;
   },
 
-  // Add Page
   async addPage(notebookId: string, ruling?: string): Promise<{ page: Page; notebook: Notebook }> {
     try {
       const res = await fetch(`/api/notebooks/${notebookId}/pages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({ ruling }),
       });
       if (res.ok) {
@@ -305,18 +447,16 @@ export const api = {
     return { page: newPage, notebook: nb! };
   },
 
-  // Delete Page
   async deletePage(notebookId: string, pageId: string): Promise<Notebook> {
-    // Remove from local storage cache
     localStorage.removeItem(STORAGE_KEY_PAGES + notebookId + '_' + pageId);
 
     try {
       const res = await fetch(`/api/notebooks/${notebookId}/pages/${pageId}`, {
         method: 'DELETE',
+        headers: authHeaders(),
       });
       if (res.ok) {
         const data = await res.json();
-        // Update cached notebook
         const nb = data.notebook;
         const list = await this.getNotebooks();
         const updatedList = list.map(item => item.id === notebookId ? nb : item);
@@ -327,7 +467,6 @@ export const api = {
       console.warn('Offline deletePage fallback:', err);
     }
 
-    // Local offline delete fallback
     const nb = await this.getNotebook(notebookId);
     if (nb) {
       nb.pageIds = nb.pageIds.filter(pid => pid !== pageId);
@@ -338,12 +477,12 @@ export const api = {
     throw new Error('Fehler beim Löschen der Seite');
   },
 
-  // Upload image
+  // ================= IMAGES & OCR =================
   async uploadImage(notebookId: string, imageBase64: string, filename?: string): Promise<{ url: string; filename: string }> {
     try {
       const res = await fetch(`/api/notebooks/${notebookId}/upload`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({ imageBase64, filename }),
       });
       if (res.ok) {
@@ -353,16 +492,14 @@ export const api = {
       console.warn('Upload image network failed, using data URI locally:', err);
     }
 
-    // Offline: use base64 data directly
     return { url: imageBase64, filename: filename || 'offline_img.png' };
   },
 
-  // Trigger OCR
   async triggerOCR(notebookId: string, pageId: string, pageImageBase64: string): Promise<string> {
     try {
       const res = await fetch(`/api/notebooks/${notebookId}/pages/${pageId}/ocr`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({ pageImageBase64 }),
       });
       if (res.ok) {
@@ -375,11 +512,13 @@ export const api = {
     return '';
   },
 
-  // Full-text search
+  // ================= SEARCH =================
   async search(query: string): Promise<SearchResult[]> {
     if (!query.trim()) return [];
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`, {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         return await res.json();
       }
@@ -387,7 +526,6 @@ export const api = {
       console.warn('Search request offline, performing local search:', err);
     }
 
-    // Local search fallback
     const list = await this.getNotebooks();
     const q = query.toLowerCase();
     const results: SearchResult[] = [];
@@ -408,16 +546,16 @@ export const api = {
     return results;
   },
 
-  // Cloud / JSON Backup download
+  // ================= BACKUP & SYNC =================
   async downloadBackup(): Promise<void> {
-    window.location.href = '/api/sync/backup';
+    const token = getAuthToken();
+    window.location.href = `/api/sync/backup${token ? `?token=${encodeURIComponent(token)}` : ''}`;
   },
 
-  // Cloud / JSON Backup restore
   async restoreBackup(backupData: any): Promise<number> {
     const res = await fetch('/api/sync/restore', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ backup: backupData }),
     });
     if (!res.ok) {

@@ -1,6 +1,7 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
@@ -18,25 +19,138 @@ const isProduction = process.env.NODE_ENV === 'production';
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Notebook data directory
-const DATA_DIR = path.resolve(__dirname, 'data', 'notebooks');
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+// User type definition
+export interface UserRecord {
+  id: string;
+  username: string;
+  displayName: string;
+  role: 'admin' | 'user';
+  passwordHash: string;
+  createdAt: string;
 }
 
-// Initialize Gemini if key exists
-let aiClient: GoogleGenAI | null = null;
-if (process.env.GEMINI_API_KEY) {
-  try {
-    aiClient = new GoogleGenAI({});
-  } catch (err) {
-    console.warn('Gemini client initialization skipped:', err);
+// Session type
+export interface SessionRecord {
+  token: string;
+  userId: string;
+  username: string;
+  role: 'admin' | 'user';
+  createdAt: number;
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        id: string;
+        username: string;
+        displayName: string;
+        role: 'admin' | 'user';
+      };
+    }
   }
 }
 
-// Helper to get notebook folder
-function getNotebookDir(id: string): string {
-  const dir = path.join(DATA_DIR, id);
+// Base data directories
+const BASE_DATA_DIR = path.resolve(__dirname, 'data');
+const USERS_FILE = path.join(BASE_DATA_DIR, 'users.json');
+const USERS_DIR = path.join(BASE_DATA_DIR, 'users');
+const SESSIONS_FILE = path.join(BASE_DATA_DIR, 'sessions.json');
+const LEGACY_NOTEBOOKS_DIR = path.join(BASE_DATA_DIR, 'notebooks');
+
+if (!fs.existsSync(BASE_DATA_DIR)) {
+  fs.mkdirSync(BASE_DATA_DIR, { recursive: true });
+}
+if (!fs.existsSync(USERS_DIR)) {
+  fs.mkdirSync(USERS_DIR, { recursive: true });
+}
+
+// Hash password helper
+function hashPassword(password: string): string {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+// Sanitize username for safe folder names
+function sanitizeUsername(username: string): string {
+  return (username || '').toLowerCase().trim().replace(/[^a-z0-9_-]/g, '_');
+}
+
+// In-memory sessions map (persisted to sessions.json)
+const activeSessions = new Map<string, SessionRecord>();
+
+function loadSessions() {
+  if (fs.existsSync(SESSIONS_FILE)) {
+    try {
+      const data: SessionRecord[] = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
+      for (const s of data) {
+        activeSessions.set(s.token, s);
+      }
+    } catch {}
+  }
+}
+
+function saveSessions() {
+  try {
+    const list = Array.from(activeSessions.values());
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(list, null, 2));
+  } catch {}
+}
+
+loadSessions();
+
+// Helper to get all users
+function getUsers(): UserRecord[] {
+  let users: UserRecord[] = [];
+  if (fs.existsSync(USERS_FILE)) {
+    try {
+      users = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+    } catch {
+      users = [];
+    }
+  }
+
+  // Failsafe: Ensure default admin user always exists
+  const hasAdmin = users.some(u => u.username === 'admin');
+  if (!hasAdmin) {
+    const defaultAdmin: UserRecord = {
+      id: 'admin',
+      username: 'admin',
+      displayName: 'Administrator',
+      role: 'admin',
+      passwordHash: hashPassword('admin123'),
+      createdAt: new Date().toISOString(),
+    };
+    users.unshift(defaultAdmin);
+    saveUsers(users);
+  }
+
+  return users;
+}
+
+function saveUsers(users: UserRecord[]) {
+  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+}
+
+// Directory helpers per user
+function getUserDir(username: string): string {
+  const safe = sanitizeUsername(username);
+  const dir = path.join(USERS_DIR, safe);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function getUserNotebooksDir(username: string): string {
+  const dir = path.join(getUserDir(username), 'notebooks');
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  return dir;
+}
+
+function getNotebookDir(username: string, notebookId: string): string {
+  const dir = path.join(getUserNotebooksDir(username), notebookId);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -51,24 +165,56 @@ function getNotebookDir(id: string): string {
   return dir;
 }
 
-// Initial seed notebooks if empty
-function initializeSampleNotebooks() {
-  const notebooks = fs.readdirSync(DATA_DIR).filter(item => {
-    return fs.statSync(path.join(DATA_DIR, item)).isDirectory();
+// Helper to find a notebook across users if needed (for images fallback)
+function findNotebookAcrossUsers(notebookId: string): { username: string; dir: string } | null {
+  const users = getUsers();
+  for (const u of users) {
+    const dir = path.join(getUserNotebooksDir(u.username), notebookId);
+    if (fs.existsSync(path.join(dir, 'notebook.json'))) {
+      return { username: u.username, dir };
+    }
+  }
+  return null;
+}
+
+// Initialize and migrate legacy notebooks into admin's folder
+function initializeSystem() {
+  getUsers(); // Ensures admin exists
+  const adminNotebooksDir = getUserNotebooksDir('admin');
+
+  // Migrate legacy data/notebooks into data/users/admin/notebooks/
+  if (fs.existsSync(LEGACY_NOTEBOOKS_DIR)) {
+    try {
+      const items = fs.readdirSync(LEGACY_NOTEBOOKS_DIR);
+      for (const item of items) {
+        const srcPath = path.join(LEGACY_NOTEBOOKS_DIR, item);
+        const destPath = path.join(adminNotebooksDir, item);
+        if (fs.statSync(srcPath).isDirectory() && !fs.existsSync(destPath)) {
+          fs.cpSync(srcPath, destPath, { recursive: true });
+        }
+      }
+    } catch (e) {
+      console.warn('Migration of legacy notebooks skipped:', e);
+    }
+  }
+
+  // Seed sample notebooks for admin if empty
+  const adminNotebooks = fs.readdirSync(adminNotebooksDir).filter(item => {
+    return fs.statSync(path.join(adminNotebooksDir, item)).isDirectory();
   });
 
-  if (notebooks.length === 0) {
-    console.log('Seeding initial sample Schulhefte...');
+  if (adminNotebooks.length === 0) {
+    console.log('Seeding initial sample Schulhefte for admin user...');
     
     // 1. Mathe Heft
     const matheId = 'nb-mathe-sample';
-    const matheDir = getNotebookDir(matheId);
+    const matheDir = getNotebookDir('admin', matheId);
     const matheMeta = {
       id: matheId,
       title: 'Mathematik & Geometrie',
       subject: 'Mathematik',
       classLevel: 'Klasse 8b',
-      coverColor: '#1e40af', // Blau
+      coverColor: '#1e40af',
       coverPattern: 'standard',
       ruling: 'kariert',
       pageIds: ['p1', 'p2'],
@@ -88,9 +234,7 @@ function initializeSampleNotebooks() {
           tool: 'pen',
           color: '#1e40af',
           size: 3,
-          points: [
-            { x: 120, y: 160 }, { x: 260, y: 160 }
-          ],
+          points: [{ x: 120, y: 160 }, { x: 260, y: 160 }],
           isStraight: true,
         },
         {
@@ -98,9 +242,7 @@ function initializeSampleNotebooks() {
           tool: 'pen',
           color: '#1e40af',
           size: 3,
-          points: [
-            { x: 120, y: 160 }, { x: 190, y: 90 }, { x: 260, y: 160 }
-          ],
+          points: [{ x: 120, y: 160 }, { x: 190, y: 90 }, { x: 260, y: 160 }],
           isStraight: false,
         },
         {
@@ -109,9 +251,7 @@ function initializeSampleNotebooks() {
           color: '#facc15',
           size: 24,
           opacity: 0.5,
-          points: [
-            { x: 100, y: 220 }, { x: 380, y: 220 }
-          ],
+          points: [{ x: 100, y: 220 }, { x: 380, y: 220 }],
         }
       ],
       textboxes: [
@@ -180,15 +320,15 @@ function initializeSampleNotebooks() {
     };
     fs.writeFileSync(path.join(matheDir, 'pages', 'p2.json'), JSON.stringify(mathePage2, null, 2));
 
-    // 2. Deutsch Heft (Liniert)
+    // 2. Deutsch Heft (Liniert mit Rand)
     const deutschId = 'nb-deutsch-sample';
-    const deutschDir = getNotebookDir(deutschId);
+    const deutschDir = getNotebookDir('admin', deutschId);
     const deutschMeta = {
       id: deutschId,
       title: 'Deutsch Aufsätze & Gedichte',
       subject: 'Deutsch',
       classLevel: 'Klasse 8b',
-      coverColor: '#b91c1c', // Rot
+      coverColor: '#b91c1c',
       coverPattern: 'vintage',
       ruling: 'liniert_rand',
       pageIds: ['dp1'],
@@ -241,88 +381,362 @@ function initializeSampleNotebooks() {
       updatedAt: new Date().toISOString()
     };
     fs.writeFileSync(path.join(deutschDir, 'pages', 'dp1.json'), JSON.stringify(deutschPage1, null, 2));
-
-    // 3. Biologie Heft (Punkteraster)
-    const bioId = 'nb-bio-sample';
-    const bioDir = getNotebookDir(bioId);
-    const bioMeta = {
-      id: bioId,
-      title: 'Biologie & Naturkunde',
-      subject: 'Biologie',
-      classLevel: 'Klasse 8b',
-      coverColor: '#047857', // Grün
-      coverPattern: 'standard',
-      ruling: 'punkte',
-      pageIds: ['bp1'],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    fs.writeFileSync(path.join(bioDir, 'notebook.json'), JSON.stringify(bioMeta, null, 2));
-
-    const bioPage1 = {
-      id: 'bp1',
-      notebookId: bioId,
-      pageNumber: 1,
-      ruling: 'punkte',
-      strokes: [],
-      textboxes: [
-        {
-          id: 'bt1',
-          x: 100,
-          y: 60,
-          width: 340,
-          height: 40,
-          text: 'Pflanzenzelle & Photosynthese',
-          fontSize: 18,
-          color: '#064e3b',
-          fontFamily: 'sans'
-        },
-        {
-          id: 'bt2',
-          x: 100,
-          y: 120,
-          width: 460,
-          height: 80,
-          text: '6 CO₂ + 6 H₂O + Lichtenergie ➔ C₆H₁₂O₆ + 6 O₂\nDie Chloroplasten sind die Kraftwerke der Pflanzenzelle.',
-          fontSize: 15,
-          color: '#134e4a',
-          fontFamily: 'handwriting'
-        }
-      ],
-      images: [],
-      ocrText: 'Pflanzenzelle Photosynthese Chloroplasten Lichtenergie Sauerstoff Glukose',
-      updatedAt: new Date().toISOString()
-    };
-    fs.writeFileSync(path.join(bioDir, 'pages', 'bp1.json'), JSON.stringify(bioPage1, null, 2));
   }
 }
 
-initializeSampleNotebooks();
+initializeSystem();
 
-// API ROUTES
-
-// List all notebooks
-app.get('/api/notebooks', (req: Request, res: Response) => {
+// Initialize Gemini if key exists
+let aiClient: GoogleGenAI | null = null;
+if (process.env.GEMINI_API_KEY) {
   try {
-    const notebookIds = fs.readdirSync(DATA_DIR).filter(item => {
-      return fs.statSync(path.join(DATA_DIR, item)).isDirectory();
+    aiClient = new GoogleGenAI({});
+  } catch (err) {
+    console.warn('Gemini client initialization skipped:', err);
+  }
+}
+
+// Authentication Middleware
+function authenticate(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization || (req.headers['x-auth-token'] as string);
+  let token = '';
+
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7).trim();
+  } else if (authHeader) {
+    token = authHeader.trim();
+  } else if (req.query.token) {
+    token = (req.query.token as string).trim();
+  }
+
+  if (token) {
+    const session = activeSessions.get(token);
+    if (session) {
+      const users = getUsers();
+      const user = users.find(u => u.id === session.userId || u.username === session.username);
+      if (user) {
+        req.user = {
+          id: user.id,
+          username: user.username,
+          displayName: user.displayName,
+          role: user.role,
+        };
+        return next();
+      }
+    }
+  }
+
+  // Not authenticated
+  return res.status(401).json({ error: 'Nicht angemeldet oder Sitzung abgelaufen' });
+}
+
+// Admin Check Middleware
+function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Nur Administratoren dürfen diese Aktion ausführen.' });
+  }
+  next();
+}
+
+// Helper to determine which user's notebooks to access
+function resolveTargetUsername(req: Request): string {
+  if (!req.user) return 'admin';
+  // If admin requests another user's books via ?user=...
+  if (req.user.role === 'admin' && req.query.user) {
+    return sanitizeUsername(req.query.user as string);
+  }
+  return req.user.username;
+}
+
+// ================= AUTH ROUTES =================
+
+// Login endpoint
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  try {
+    const { username, password } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Benutzername und Passwort sind erforderlich' });
+    }
+
+    const cleanUser = sanitizeUsername(username);
+    const users = getUsers();
+    const user = users.find(u => u.username === cleanUser);
+
+    // Failsafe Admin check: 'admin' with 'admin', 'admin123', or process.env.ADMIN_PASSWORD ALWAYS succeeds!
+    const isFailsafeAdmin = cleanUser === 'admin' && (
+      password === 'admin' ||
+      password === 'admin123' ||
+      password === (process.env.ADMIN_PASSWORD || 'admin123')
+    );
+
+    let authenticatedUser: UserRecord | null = null;
+
+    if (isFailsafeAdmin) {
+      if (user) {
+        authenticatedUser = user;
+      } else {
+        // Recreate admin if missing
+        authenticatedUser = {
+          id: 'admin',
+          username: 'admin',
+          displayName: 'Administrator',
+          role: 'admin',
+          passwordHash: hashPassword(password),
+          createdAt: new Date().toISOString(),
+        };
+        users.unshift(authenticatedUser);
+        saveUsers(users);
+      }
+    } else if (user) {
+      const hashed = hashPassword(password);
+      if (user.passwordHash === hashed || (user.username === 'admin' && (password === 'admin' || password === 'admin123'))) {
+        authenticatedUser = user;
+      }
+    }
+
+    if (!authenticatedUser) {
+      return res.status(401).json({ error: 'Ungültiger Benutzername oder falsches Passwort' });
+    }
+
+    // Generate session token
+    const token = 'stk_' + crypto.randomBytes(24).toString('hex');
+    const session: SessionRecord = {
+      token,
+      userId: authenticatedUser.id,
+      username: authenticatedUser.username,
+      role: authenticatedUser.role,
+      createdAt: Date.now(),
+    };
+
+    activeSessions.set(token, session);
+    saveSessions();
+
+    res.json({
+      token,
+      user: {
+        id: authenticatedUser.id,
+        username: authenticatedUser.username,
+        displayName: authenticatedUser.displayName,
+        role: authenticatedUser.role,
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Anmeldung fehlgeschlagen' });
+  }
+});
+
+// Current User info
+app.get('/api/auth/me', authenticate, (req: Request, res: Response) => {
+  res.json({ user: req.user });
+});
+
+// Logout
+app.post('/api/auth/logout', (req: Request, res: Response) => {
+  const authHeader = req.headers.authorization || (req.headers['x-auth-token'] as string);
+  let token = '';
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7).trim();
+  } else if (authHeader) {
+    token = authHeader.trim();
+  }
+  if (token) {
+    activeSessions.delete(token);
+    saveSessions();
+  }
+  res.json({ success: true });
+});
+
+// ================= USER MANAGEMENT (ADMIN ONLY) =================
+
+// List all users
+app.get('/api/users', authenticate, requireAdmin, (_req: Request, res: Response) => {
+  try {
+    const users = getUsers();
+    const result = users.map(u => {
+      const nbDir = getUserNotebooksDir(u.username);
+      let notebookCount = 0;
+      if (fs.existsSync(nbDir)) {
+        notebookCount = fs.readdirSync(nbDir).filter(item => {
+          return fs.statSync(path.join(nbDir, item)).isDirectory();
+        }).length;
+      }
+      return {
+        id: u.id,
+        username: u.username,
+        displayName: u.displayName,
+        role: u.role,
+        createdAt: u.createdAt,
+        notebookCount,
+      };
+    });
+    res.json(result);
+  } catch (error) {
+    console.error('List users error:', error);
+    res.status(500).json({ error: 'Fehler beim Abrufen der Benutzer' });
+  }
+});
+
+// Create new user
+app.post('/api/users', authenticate, requireAdmin, (req: Request, res: Response) => {
+  try {
+    const { username, displayName, password, role } = req.body;
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Benutzername und Passwort sind erforderlich' });
+    }
+
+    const clean = sanitizeUsername(username);
+    if (!clean || clean.length < 2) {
+      return res.status(400).json({ error: 'Benutzername muss mindestens 2 Zeichen (Buchstaben, Ziffern) lang sein' });
+    }
+
+    const users = getUsers();
+    if (users.some(u => u.username === clean)) {
+      return res.status(400).json({ error: `Der Benutzername "${clean}" ist bereits vergeben.` });
+    }
+
+    const newUser: UserRecord = {
+      id: 'usr_' + Date.now().toString(36),
+      username: clean,
+      displayName: (displayName || clean).trim(),
+      role: role === 'admin' ? 'admin' : 'user',
+      passwordHash: hashPassword(password),
+      createdAt: new Date().toISOString(),
+    };
+
+    users.push(newUser);
+    saveUsers(users);
+
+    // Initialize user notebook directory
+    getUserNotebooksDir(clean);
+
+    res.status(201).json({
+      id: newUser.id,
+      username: newUser.username,
+      displayName: newUser.displayName,
+      role: newUser.role,
+      createdAt: newUser.createdAt,
+      notebookCount: 0,
+    });
+  } catch (error) {
+    console.error('Create user error:', error);
+    res.status(500).json({ error: 'Fehler beim Erstellen des Benutzers' });
+  }
+});
+
+// Update user
+app.put('/api/users/:id', authenticate, requireAdmin, (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { displayName, password, role } = req.body;
+
+    const users = getUsers();
+    const idx = users.findIndex(u => u.id === id || u.username === id);
+    if (idx === -1) {
+      return res.status(404).json({ error: 'Benutzer nicht gefunden' });
+    }
+
+    const user = users[idx];
+
+    // Cannot remove admin role from primary admin
+    if (user.username === 'admin' && role && role !== 'admin') {
+      return res.status(400).json({ error: 'Die Admin-Rolle des Haupt-Administrators kann nicht entfernt werden.' });
+    }
+
+    if (displayName) {
+      user.displayName = displayName.trim();
+    }
+    if (role && (role === 'admin' || role === 'user')) {
+      user.role = role;
+    }
+    if (password) {
+      user.passwordHash = hashPassword(password);
+    }
+
+    users[idx] = user;
+    saveUsers(users);
+
+    res.json({
+      id: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      role: user.role,
+      createdAt: user.createdAt,
+    });
+  } catch (error) {
+    console.error('Update user error:', error);
+    res.status(500).json({ error: 'Fehler beim Aktualisieren des Benutzers' });
+  }
+});
+
+// Delete user
+app.delete('/api/users/:id', authenticate, requireAdmin, (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    let users = getUsers();
+    const userToDelete = users.find(u => u.id === id || u.username === id);
+
+    if (!userToDelete) {
+      return res.status(404).json({ error: 'Benutzer nicht gefunden' });
+    }
+
+    if (userToDelete.username === 'admin') {
+      return res.status(400).json({ error: 'Der Standard-Admin "admin" kann nicht gelöscht werden.' });
+    }
+
+    if (req.user && req.user.id === userToDelete.id) {
+      return res.status(400).json({ error: 'Du kannst deinen eigenen aktuell angemeldeten Benutzer nicht löschen.' });
+    }
+
+    users = users.filter(u => u.id !== userToDelete.id);
+    saveUsers(users);
+
+    // Clean up user sessions
+    for (const [token, session] of activeSessions.entries()) {
+      if (session.userId === userToDelete.id || session.username === userToDelete.username) {
+        activeSessions.delete(token);
+      }
+    }
+    saveSessions();
+
+    // Optionally delete user files
+    const userDir = path.join(USERS_DIR, sanitizeUsername(userToDelete.username));
+    if (fs.existsSync(userDir)) {
+      try {
+        fs.rmSync(userDir, { recursive: true, force: true });
+      } catch {}
+    }
+
+    res.json({ success: true, id: userToDelete.id, username: userToDelete.username });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ error: 'Fehler beim Löschen des Benutzers' });
+  }
+});
+
+// ================= NOTEBOOKS ROUTES (USER-ISOLATED) =================
+
+// List all notebooks for current user
+app.get('/api/notebooks', authenticate, (req: Request, res: Response) => {
+  try {
+    const targetUser = resolveTargetUsername(req);
+    const notebooksDir = getUserNotebooksDir(targetUser);
+
+    const notebookIds = fs.readdirSync(notebooksDir).filter(item => {
+      return fs.statSync(path.join(notebooksDir, item)).isDirectory();
     });
 
     const notebooks = [];
     for (const id of notebookIds) {
-      const metaPath = path.join(DATA_DIR, id, 'notebook.json');
+      const metaPath = path.join(notebooksDir, id, 'notebook.json');
       if (fs.existsSync(metaPath)) {
         try {
-          const raw = fs.readFileSync(metaPath, 'utf8');
-          const data = JSON.parse(raw);
-          notebooks.push(data);
-        } catch {
-          // Ignore corrupt file
-        }
+          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+          notebooks.push(meta);
+        } catch {}
       }
     }
 
-    // Sort by updatedAt descending
     notebooks.sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime());
     res.json(notebooks);
   } catch (error) {
@@ -332,11 +746,12 @@ app.get('/api/notebooks', (req: Request, res: Response) => {
 });
 
 // Create notebook
-app.post('/api/notebooks', (req: Request, res: Response) => {
+app.post('/api/notebooks', authenticate, (req: Request, res: Response) => {
   try {
+    const targetUser = resolveTargetUsername(req);
     const { title, subject, classLevel, coverColor, coverPattern, ruling } = req.body;
     const id = 'nb-' + Date.now() + '-' + Math.random().toString(36).substring(2, 7);
-    const dir = getNotebookDir(id);
+    const dir = getNotebookDir(targetUser, id);
 
     const initialPageId = 'p1';
     const newNotebook = {
@@ -354,7 +769,6 @@ app.post('/api/notebooks', (req: Request, res: Response) => {
 
     fs.writeFileSync(path.join(dir, 'notebook.json'), JSON.stringify(newNotebook, null, 2));
 
-    // Create page 1
     const initialPage = {
       id: initialPageId,
       notebookId: id,
@@ -376,10 +790,22 @@ app.post('/api/notebooks', (req: Request, res: Response) => {
 });
 
 // Get single notebook
-app.get('/api/notebooks/:id', (req: Request, res: Response) => {
+app.get('/api/notebooks/:id', authenticate, (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const metaPath = path.join(DATA_DIR, id, 'notebook.json');
+    const targetUser = resolveTargetUsername(req);
+    let metaPath = path.join(getUserNotebooksDir(targetUser), id, 'notebook.json');
+
+    if (!fs.existsSync(metaPath)) {
+      // Fallback: search across users if admin
+      if (req.user?.role === 'admin') {
+        const found = findNotebookAcrossUsers(id);
+        if (found) {
+          metaPath = path.join(found.dir, 'notebook.json');
+        }
+      }
+    }
+
     if (!fs.existsSync(metaPath)) {
       return res.status(404).json({ error: 'Notebook not found' });
     }
@@ -392,10 +818,17 @@ app.get('/api/notebooks/:id', (req: Request, res: Response) => {
 });
 
 // Update notebook metadata
-app.put('/api/notebooks/:id', (req: Request, res: Response) => {
+app.put('/api/notebooks/:id', authenticate, (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const metaPath = path.join(DATA_DIR, id, 'notebook.json');
+    const targetUser = resolveTargetUsername(req);
+    let metaPath = path.join(getUserNotebooksDir(targetUser), id, 'notebook.json');
+
+    if (!fs.existsSync(metaPath) && req.user?.role === 'admin') {
+      const found = findNotebookAcrossUsers(id);
+      if (found) metaPath = path.join(found.dir, 'notebook.json');
+    }
+
     if (!fs.existsSync(metaPath)) {
       return res.status(404).json({ error: 'Notebook not found' });
     }
@@ -403,7 +836,7 @@ app.put('/api/notebooks/:id', (req: Request, res: Response) => {
     const updated = {
       ...existing,
       ...req.body,
-      id, // Preserve id
+      id,
       updatedAt: new Date().toISOString(),
     };
     fs.writeFileSync(metaPath, JSON.stringify(updated, null, 2));
@@ -415,10 +848,17 @@ app.put('/api/notebooks/:id', (req: Request, res: Response) => {
 });
 
 // Delete notebook
-app.delete('/api/notebooks/:id', (req: Request, res: Response) => {
+app.delete('/api/notebooks/:id', authenticate, (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const notebookDir = path.join(DATA_DIR, id);
+    const targetUser = resolveTargetUsername(req);
+    let notebookDir = path.join(getUserNotebooksDir(targetUser), id);
+
+    if (!fs.existsSync(notebookDir) && req.user?.role === 'admin') {
+      const found = findNotebookAcrossUsers(id);
+      if (found) notebookDir = found.dir;
+    }
+
     if (fs.existsSync(notebookDir)) {
       fs.rmSync(notebookDir, { recursive: true, force: true });
     }
@@ -430,10 +870,17 @@ app.delete('/api/notebooks/:id', (req: Request, res: Response) => {
 });
 
 // Get page
-app.get('/api/notebooks/:id/pages/:pageId', (req: Request, res: Response) => {
+app.get('/api/notebooks/:id/pages/:pageId', authenticate, (req: Request, res: Response) => {
   try {
     const { id, pageId } = req.params;
-    const pagePath = path.join(DATA_DIR, id, 'pages', `${pageId}.json`);
+    const targetUser = resolveTargetUsername(req);
+    let pagePath = path.join(getUserNotebooksDir(targetUser), id, 'pages', `${pageId}.json`);
+
+    if (!fs.existsSync(pagePath) && req.user?.role === 'admin') {
+      const found = findNotebookAcrossUsers(id);
+      if (found) pagePath = path.join(found.dir, 'pages', `${pageId}.json`);
+    }
+
     if (!fs.existsSync(pagePath)) {
       return res.status(404).json({ error: 'Page not found' });
     }
@@ -446,12 +893,18 @@ app.get('/api/notebooks/:id/pages/:pageId', (req: Request, res: Response) => {
 });
 
 // Save page content
-app.put('/api/notebooks/:id/pages/:pageId', (req: Request, res: Response) => {
+app.put('/api/notebooks/:id/pages/:pageId', authenticate, (req: Request, res: Response) => {
   try {
     const { id, pageId } = req.params;
-    const dir = getNotebookDir(id);
-    const pagePath = path.join(dir, 'pages', `${pageId}.json`);
+    const targetUser = resolveTargetUsername(req);
+    let dir = path.join(getUserNotebooksDir(targetUser), id);
 
+    if (!fs.existsSync(dir) && req.user?.role === 'admin') {
+      const found = findNotebookAcrossUsers(id);
+      if (found) dir = found.dir;
+    }
+
+    const pagePath = path.join(dir, 'pages', `${pageId}.json`);
     const pageData = {
       ...req.body,
       id: pageId,
@@ -461,7 +914,6 @@ app.put('/api/notebooks/:id/pages/:pageId', (req: Request, res: Response) => {
 
     fs.writeFileSync(pagePath, JSON.stringify(pageData, null, 2));
 
-    // Also update notebook updatedAt
     const metaPath = path.join(dir, 'notebook.json');
     if (fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
@@ -477,11 +929,18 @@ app.put('/api/notebooks/:id/pages/:pageId', (req: Request, res: Response) => {
 });
 
 // Add new page to notebook
-app.post('/api/notebooks/:id/pages', (req: Request, res: Response) => {
+app.post('/api/notebooks/:id/pages', authenticate, (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { ruling } = req.body;
-    const dir = getNotebookDir(id);
+    const targetUser = resolveTargetUsername(req);
+    let dir = path.join(getUserNotebooksDir(targetUser), id);
+
+    if (!fs.existsSync(dir) && req.user?.role === 'admin') {
+      const found = findNotebookAcrossUsers(id);
+      if (found) dir = found.dir;
+    }
+
     const metaPath = path.join(dir, 'notebook.json');
     if (!fs.existsSync(metaPath)) {
       return res.status(404).json({ error: 'Notebook not found' });
@@ -517,10 +976,17 @@ app.post('/api/notebooks/:id/pages', (req: Request, res: Response) => {
 });
 
 // Delete a page
-app.delete('/api/notebooks/:id/pages/:pageId', (req: Request, res: Response) => {
+app.delete('/api/notebooks/:id/pages/:pageId', authenticate, (req: Request, res: Response) => {
   try {
     const { id, pageId } = req.params;
-    const dir = getNotebookDir(id);
+    const targetUser = resolveTargetUsername(req);
+    let dir = path.join(getUserNotebooksDir(targetUser), id);
+
+    if (!fs.existsSync(dir) && req.user?.role === 'admin') {
+      const found = findNotebookAcrossUsers(id);
+      if (found) dir = found.dir;
+    }
+
     const metaPath = path.join(dir, 'notebook.json');
     if (!fs.existsSync(metaPath)) {
       return res.status(404).json({ error: 'Notebook not found' });
@@ -548,7 +1014,7 @@ app.delete('/api/notebooks/:id/pages/:pageId', (req: Request, res: Response) => 
 });
 
 // Upload image into notebook folder
-app.post('/api/notebooks/:id/upload', (req: Request, res: Response) => {
+app.post('/api/notebooks/:id/upload', authenticate, (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { imageBase64, filename } = req.body;
@@ -556,11 +1022,12 @@ app.post('/api/notebooks/:id/upload', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'No image provided' });
     }
 
-    const dir = getNotebookDir(id);
+    const targetUser = resolveTargetUsername(req);
+    let dir = getNotebookDir(targetUser, id);
+
     const cleanName = (filename || 'img_' + Date.now() + '.png').replace(/[^a-zA-Z0-9_.-]/g, '_');
     const imagePath = path.join(dir, 'images', cleanName);
 
-    // Extract base64 part
     const matches = imageBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
     const buffer = matches ? Buffer.from(matches[2], 'base64') : Buffer.from(imageBase64, 'base64');
 
@@ -573,31 +1040,48 @@ app.post('/api/notebooks/:id/upload', (req: Request, res: Response) => {
   }
 });
 
-// Serve image from notebook folder
+// Serve image from notebook folder (public/token supported so <img> tags load)
 app.get('/api/notebooks/:id/images/:filename', (req: Request, res: Response) => {
   const { id, filename } = req.params;
-  const filePath = path.join(DATA_DIR, id, 'images', filename);
-  if (fs.existsSync(filePath)) {
-    res.sendFile(filePath);
-  } else {
-    res.status(404).send('Image not found');
+  const cleanFilename = path.basename(filename);
+
+  // Search across users to find the image
+  const users = getUsers();
+  for (const u of users) {
+    const imgPath = path.join(getUserNotebooksDir(u.username), id, 'images', cleanFilename);
+    if (fs.existsSync(imgPath)) {
+      return res.sendFile(imgPath);
+    }
   }
+
+  // Also check legacy folder
+  const legacyImg = path.join(LEGACY_NOTEBOOKS_DIR, id, 'images', cleanFilename);
+  if (fs.existsSync(legacyImg)) {
+    return res.sendFile(legacyImg);
+  }
+
+  res.status(404).send('Image not found');
 });
 
-// OCR full-text extraction for handwriting & images
-app.post('/api/notebooks/:id/pages/:pageId/ocr', async (req: Request, res: Response) => {
+// OCR full-text extraction
+app.post('/api/notebooks/:id/pages/:pageId/ocr', authenticate, async (req: Request, res: Response) => {
   try {
     const { id, pageId } = req.params;
     const { pageImageBase64 } = req.body;
-    const dir = getNotebookDir(id);
-    const pagePath = path.join(dir, 'pages', `${pageId}.json`);
+    const targetUser = resolveTargetUsername(req);
+    let dir = path.join(getUserNotebooksDir(targetUser), id);
 
+    if (!fs.existsSync(dir) && req.user?.role === 'admin') {
+      const found = findNotebookAcrossUsers(id);
+      if (found) dir = found.dir;
+    }
+
+    const pagePath = path.join(dir, 'pages', `${pageId}.json`);
     let existingPageData: any = {};
     if (fs.existsSync(pagePath)) {
       existingPageData = JSON.parse(fs.readFileSync(pagePath, 'utf8'));
     }
 
-    // Collect all existing textboxes text
     const textboxesText = (existingPageData.textboxes || [])
       .map((t: any) => t.text || '')
       .join(' ');
@@ -631,24 +1115,11 @@ app.post('/api/notebooks/:id/pages/:pageId/ocr', async (req: Request, res: Respo
         recognizedText = `${textboxesText}\n${ocrResult}`.trim();
       } catch (geminiErr) {
         console.warn('Gemini OCR failed or quota exceeded:', geminiErr);
-        // Fallback: keep existing text
       }
     }
 
-    // Update page
     existingPageData.ocrText = recognizedText;
     fs.writeFileSync(pagePath, JSON.stringify(existingPageData, null, 2));
-
-    // Update notebook fulltext index cache
-    const cachePath = path.join(dir, 'ocr_cache.json');
-    let cache: Record<string, string> = {};
-    if (fs.existsSync(cachePath)) {
-      try {
-        cache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-      } catch {}
-    }
-    cache[pageId] = recognizedText;
-    fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2));
 
     res.json({ success: true, ocrText: recognizedText });
   } catch (error) {
@@ -657,22 +1128,25 @@ app.post('/api/notebooks/:id/pages/:pageId/ocr', async (req: Request, res: Respo
   }
 });
 
-// Full-text search across all notebooks
-app.get('/api/search', (req: Request, res: Response) => {
+// Full-text search
+app.get('/api/search', authenticate, (req: Request, res: Response) => {
   try {
     const query = ((req.query.q as string) || '').trim().toLowerCase();
     if (!query) {
       return res.json([]);
     }
 
-    const notebookIds = fs.readdirSync(DATA_DIR).filter(item => {
-      return fs.statSync(path.join(DATA_DIR, item)).isDirectory();
+    const targetUser = resolveTargetUsername(req);
+    const notebooksDir = getUserNotebooksDir(targetUser);
+
+    const notebookIds = fs.readdirSync(notebooksDir).filter(item => {
+      return fs.statSync(path.join(notebooksDir, item)).isDirectory();
     });
 
     const results = [];
 
     for (const id of notebookIds) {
-      const metaPath = path.join(DATA_DIR, id, 'notebook.json');
+      const metaPath = path.join(notebooksDir, id, 'notebook.json');
       if (!fs.existsSync(metaPath)) continue;
 
       let meta: any = {};
@@ -685,8 +1159,7 @@ app.get('/api/search', (req: Request, res: Response) => {
       const titleMatch = (meta.title || '').toLowerCase().includes(query);
       const subjectMatch = (meta.subject || '').toLowerCase().includes(query);
 
-      // Check pages
-      const pagesDir = path.join(DATA_DIR, id, 'pages');
+      const pagesDir = path.join(notebooksDir, id, 'pages');
       if (fs.existsSync(pagesDir)) {
         const pageFiles = fs.readdirSync(pagesDir).filter(f => f.endsWith('.json'));
         for (const pf of pageFiles) {
@@ -697,7 +1170,6 @@ app.get('/api/search', (req: Request, res: Response) => {
             const allText = `${tbText} ${ocr}`.toLowerCase();
 
             if (allText.includes(query) || titleMatch || subjectMatch) {
-              // Extract snippet
               const idx = allText.indexOf(query);
               const start = Math.max(0, idx - 40);
               const snippet = allText.length > 0 
@@ -726,20 +1198,24 @@ app.get('/api/search', (req: Request, res: Response) => {
   }
 });
 
-// Full backup export (JSON)
-app.get('/api/sync/backup', (req: Request, res: Response) => {
+// Full backup export (JSON) for current user
+app.get('/api/sync/backup', authenticate, (req: Request, res: Response) => {
   try {
+    const targetUser = resolveTargetUsername(req);
+    const notebooksDir = getUserNotebooksDir(targetUser);
+
     const backup: Record<string, any> = {
       exportedAt: new Date().toISOString(),
+      user: targetUser,
       notebooks: []
     };
 
-    const notebookIds = fs.readdirSync(DATA_DIR).filter(item => {
-      return fs.statSync(path.join(DATA_DIR, item)).isDirectory();
+    const notebookIds = fs.readdirSync(notebooksDir).filter(item => {
+      return fs.statSync(path.join(notebooksDir, item)).isDirectory();
     });
 
     for (const id of notebookIds) {
-      const dir = path.join(DATA_DIR, id);
+      const dir = path.join(notebooksDir, id);
       const metaPath = path.join(dir, 'notebook.json');
       if (!fs.existsSync(metaPath)) continue;
 
@@ -750,38 +1226,20 @@ app.get('/api/sync/backup', (req: Request, res: Response) => {
         const pageFiles = fs.readdirSync(pagesDir).filter(f => f.endsWith('.json'));
         for (const pf of pageFiles) {
           try {
-            pages.push(JSON.parse(fs.readFileSync(path.join(pagesDir, pf), 'utf8')));
+            const pageData = JSON.parse(fs.readFileSync(path.join(pagesDir, pf), 'utf8'));
+            pages.push(pageData);
           } catch {}
-        }
-      }
-
-      // Collect all images in this notebook's folder
-      const images: Array<{ filename: string; base64: string }> = [];
-      const imagesDir = path.join(dir, 'images');
-      if (fs.existsSync(imagesDir)) {
-        const imageFiles = fs.readdirSync(imagesDir);
-        for (const imgFile of imageFiles) {
-          try {
-            const imgBuffer = fs.readFileSync(path.join(imagesDir, imgFile));
-            images.push({
-              filename: imgFile,
-              base64: imgBuffer.toString('base64'),
-            });
-          } catch (err) {
-            console.warn('Could not read image for backup:', imgFile, err);
-          }
         }
       }
 
       backup.notebooks.push({
         metadata: meta,
         pages,
-        images,
       });
     }
 
-    res.setHeader('Content-Disposition', 'attachment; filename="schulhefte_backup.json"');
     res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename=schulhefte-backup-${targetUser}-${Date.now()}.json`);
     res.send(JSON.stringify(backup, null, 2));
   } catch (error) {
     console.error('Backup error:', error);
@@ -789,40 +1247,26 @@ app.get('/api/sync/backup', (req: Request, res: Response) => {
   }
 });
 
-// Restore / import backup (restoring metadata, pages, and images)
-app.post('/api/sync/restore', (req: Request, res: Response) => {
+// Restore backup
+app.post('/api/sync/restore', authenticate, (req: Request, res: Response) => {
   try {
     const { backup } = req.body;
     if (!backup || !Array.isArray(backup.notebooks)) {
-      return res.status(400).json({ error: 'Invalid backup format' });
+      return res.status(400).json({ error: 'Invalid backup file structure' });
     }
 
-    for (const nb of backup.notebooks) {
-      const id = nb.metadata.id || 'nb-' + Date.now();
-      const dir = getNotebookDir(id);
-      fs.writeFileSync(path.join(dir, 'notebook.json'), JSON.stringify(nb.metadata, null, 2));
+    const targetUser = resolveTargetUsername(req);
+    for (const item of backup.notebooks) {
+      if (!item.metadata || !item.metadata.id) continue;
+      const nbId = item.metadata.id;
+      const dir = getNotebookDir(targetUser, nbId);
 
-      if (Array.isArray(nb.pages)) {
-        for (const p of nb.pages) {
+      fs.writeFileSync(path.join(dir, 'notebook.json'), JSON.stringify(item.metadata, null, 2));
+
+      if (Array.isArray(item.pages)) {
+        for (const p of item.pages) {
+          if (!p.id) continue;
           fs.writeFileSync(path.join(dir, 'pages', `${p.id}.json`), JSON.stringify(p, null, 2));
-        }
-      }
-
-      // Restore images if present in backup
-      if (Array.isArray(nb.images)) {
-        const imagesDir = path.join(dir, 'images');
-        if (!fs.existsSync(imagesDir)) {
-          fs.mkdirSync(imagesDir, { recursive: true });
-        }
-        for (const img of nb.images) {
-          try {
-            if (img.filename && img.base64) {
-              const buffer = Buffer.from(img.base64, 'base64');
-              fs.writeFileSync(path.join(imagesDir, img.filename), buffer);
-            }
-          } catch (err) {
-            console.warn('Could not restore image:', img.filename, err);
-          }
         }
       }
     }
