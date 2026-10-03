@@ -58,12 +58,22 @@ export async function exportNotebookToPDF(
       }
     }
 
-    // 4. Draw strokes
+    // 4. Draw shapes
+    for (const sh of page.shapes || []) {
+      drawShapeOnCanvas(ctx, sh);
+    }
+
+    // 5. Draw tables
+    for (const tbl of page.tables || []) {
+      drawTableOnCanvas(ctx, tbl);
+    }
+
+    // 6. Draw strokes
     for (const stroke of page.strokes || []) {
       drawStrokeOnCanvas(ctx, stroke);
     }
 
-    // 5. Draw textboxes
+    // 7. Draw textboxes
     for (const tb of page.textboxes || []) {
       ctx.save();
       ctx.font = `${tb.fontSize * 1.2}px ${
@@ -85,7 +95,7 @@ export async function exportNotebookToPDF(
       ctx.restore();
     }
 
-    // 6. Draw subtle page number footer
+    // 8. Draw subtle page number footer
     ctx.save();
     ctx.font = '12px sans-serif';
     ctx.fillStyle = '#94a3b8';
@@ -212,7 +222,56 @@ function drawStrokeOnCanvas(ctx: CanvasRenderingContext2D, stroke: any) {
     ctx.lineJoin = 'round';
   }
 
-  if (stroke.isStraight && points.length >= 2) {
+  if (stroke.tool === 'arrow') {
+    if (stroke.isDotted || stroke.arrowStyle === 'dotted') {
+      ctx.setLineDash([stroke.size * 1.5, stroke.size * 2]);
+    } else {
+      ctx.setLineDash([]);
+    }
+
+    if (points.length >= 2) {
+      const first = points[0];
+      const last = points[points.length - 1];
+
+      ctx.beginPath();
+      ctx.moveTo(first.x, first.y);
+      ctx.lineTo(last.x, last.y);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      const angle = Math.atan2(last.y - first.y, last.x - first.x);
+      const headLen = Math.max(12, stroke.size * 3.4);
+      const headAngle = 0.48;
+
+      ctx.fillStyle = stroke.color;
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(last.x - headLen * Math.cos(angle - headAngle), last.y - headLen * Math.sin(angle - headAngle));
+      ctx.lineTo(last.x - (headLen * 0.72) * Math.cos(angle), last.y - (headLen * 0.72) * Math.sin(angle));
+      ctx.lineTo(last.x - headLen * Math.cos(angle + headAngle), last.y - headLen * Math.sin(angle + headAngle));
+      ctx.closePath();
+      ctx.fill();
+
+      if (stroke.arrowHead === 'both') {
+        const startAngle = Math.atan2(first.y - last.y, first.x - last.x);
+        ctx.beginPath();
+        ctx.moveTo(first.x, first.y);
+        ctx.lineTo(first.x - headLen * Math.cos(startAngle - headAngle), first.y - headLen * Math.sin(startAngle - headAngle));
+        ctx.lineTo(first.x - (headLen * 0.72) * Math.cos(startAngle), first.y - (headLen * 0.72) * Math.sin(startAngle));
+        ctx.lineTo(first.x - headLen * Math.cos(startAngle + headAngle), first.y - headLen * Math.sin(startAngle + headAngle));
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+  } else if (stroke.recognizedShape && stroke.recognizedShape !== 'none' && points.length >= 3) {
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  } else if (stroke.isStraight && points.length >= 2) {
     const first = points[0];
     const last = points[points.length - 1];
     ctx.beginPath();
@@ -234,6 +293,132 @@ function drawStrokeOnCanvas(ctx: CanvasRenderingContext2D, stroke: any) {
     }
     const last = points[points.length - 1];
     ctx.lineTo(last.x, last.y);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawShapeOnCanvas(ctx: CanvasRenderingContext2D, sh: any) {
+  ctx.save();
+  ctx.strokeStyle = sh.strokeColor || '#1e40af';
+  ctx.lineWidth = sh.strokeWidth || 2;
+  const hasFill = sh.fillColor && sh.fillColor !== 'transparent';
+  if (hasFill) {
+    ctx.fillStyle = sh.fillColor;
+  }
+
+  const { x, y, width, height, type } = sh;
+
+  if (type === 'circle') {
+    ctx.beginPath();
+    ctx.ellipse(x + width / 2, y + height / 2, width / 2, height / 2, 0, 0, Math.PI * 2);
+    if (hasFill) ctx.fill();
+    ctx.stroke();
+  } else if (type === 'triangle') {
+    ctx.beginPath();
+    ctx.moveTo(x + width / 2, y);
+    ctx.lineTo(x + width, y + height);
+    ctx.lineTo(x, y + height);
+    ctx.closePath();
+    if (hasFill) ctx.fill();
+    ctx.stroke();
+  } else if (type === 'rhombus') {
+    ctx.beginPath();
+    ctx.moveTo(x + width / 2, y);
+    ctx.lineTo(x + width, y + height / 2);
+    ctx.lineTo(x + width / 2, y + height);
+    ctx.lineTo(x, y + height / 2);
+    ctx.closePath();
+    if (hasFill) ctx.fill();
+    ctx.stroke();
+  } else if (type === 'rounded_rectangle') {
+    const radius = 12;
+    ctx.beginPath();
+    if (typeof (ctx as any).roundRect === 'function') {
+      (ctx as any).roundRect(x, y, width, height, radius);
+    } else {
+      ctx.rect(x, y, width, height);
+    }
+    if (hasFill) ctx.fill();
+    ctx.stroke();
+  } else {
+    ctx.beginPath();
+    ctx.rect(x, y, width, height);
+    if (hasFill) ctx.fill();
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawTableOnCanvas(ctx: CanvasRenderingContext2D, tbl: any) {
+  ctx.save();
+  const width = tbl.width || Math.max(260, tbl.cols * 150);
+  const rowHeight = tbl.rowHeight || 34;
+  const fontSize = tbl.fontSize || 13;
+  const showHeader = tbl.showHeader !== false;
+  const colWidth = width / tbl.cols;
+  const headerHeight = showHeader ? rowHeight : 0;
+  const totalHeight = headerHeight + tbl.rows * rowHeight;
+
+  // Background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(tbl.x, tbl.y, width, totalHeight);
+
+  // Outer border
+  ctx.strokeStyle = '#cbd5e1';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(tbl.x, tbl.y, width, totalHeight);
+
+  // Headers
+  if (showHeader) {
+    ctx.fillStyle = '#f1f5f9';
+    ctx.fillRect(tbl.x, tbl.y, width, headerHeight);
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.beginPath();
+    ctx.moveTo(tbl.x, tbl.y + headerHeight);
+    ctx.lineTo(tbl.x + width, tbl.y + headerHeight);
+    ctx.stroke();
+
+    ctx.font = `bold ${fontSize}px sans-serif`;
+    ctx.fillStyle = '#1e293b';
+    ctx.textBaseline = 'middle';
+    for (let c = 0; c < tbl.cols; c++) {
+      const title = tbl.headers?.[c] ?? `Spalte ${c + 1}`;
+      ctx.fillText(title, tbl.x + c * colWidth + 8, tbl.y + headerHeight / 2, colWidth - 16);
+    }
+  }
+
+  // Row lines & cell texts
+  ctx.font = `${fontSize}px sans-serif`;
+  ctx.fillStyle = '#0f172a';
+  ctx.textBaseline = 'middle';
+
+  for (let r = 0; r < tbl.rows; r++) {
+    const rowY = tbl.y + headerHeight + r * rowHeight;
+    // Horizontal row line
+    if (r > 0) {
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.beginPath();
+      ctx.moveTo(tbl.x, rowY);
+      ctx.lineTo(tbl.x + width, rowY);
+      ctx.stroke();
+    }
+
+    for (let c = 0; c < tbl.cols; c++) {
+      const val = tbl.data?.[r]?.[c] || '';
+      ctx.fillText(val, tbl.x + c * colWidth + 8, rowY + rowHeight / 2, colWidth - 16);
+    }
+  }
+
+  // Vertical column lines
+  ctx.strokeStyle = '#e2e8f0';
+  for (let c = 1; c < tbl.cols; c++) {
+    const colX = tbl.x + c * colWidth;
+    ctx.beginPath();
+    ctx.moveTo(colX, tbl.y);
+    ctx.lineTo(colX, tbl.y + totalHeight);
     ctx.stroke();
   }
 

@@ -18,8 +18,8 @@ export default defineConfig(() => {
         includeAssets: ['icon.svg', 'pwa-192x192.png', 'pwa-512x512.png'],
         manifest: {
           id: '/',
-          name: 'Schulheft Pro - Digitales Schulheft',
-          short_name: 'Schulheft',
+          name: 'Schulhefte',
+          short_name: 'Schulhefte',
           description: 'Digitale Schulhefte für Android & PWA mit Stifteingabe, Geodreieck, Lineal, Marker und OCR.',
           theme_color: '#1e40af',
           background_color: '#f5f5f4',

@@ -150,6 +150,24 @@ export const ShapesModal: React.FC<ShapesModalProps> = ({
               </div>
             </div>
           </button>
+
+          {/* 5. Raute / Rhombus */}
+          <button
+            onClick={() => handleSelectShape('rhombus')}
+            className="p-4 rounded-2xl border-2 border-stone-200 dark:border-stone-800 hover:border-purple-500 dark:hover:border-purple-500 bg-stone-50/60 dark:bg-stone-800/40 hover:bg-purple-50/30 dark:hover:bg-purple-950/20 text-left transition flex flex-col items-center justify-center gap-2.5 group active:scale-95 col-span-2 sm:col-span-1"
+          >
+            <div className="w-14 h-12 flex items-center justify-center group-hover:scale-105 transition-transform">
+              <svg viewBox="0 0 44 44" className="w-12 h-12 stroke-purple-600 dark:stroke-purple-400 fill-purple-50 dark:fill-purple-950/40 stroke-2">
+                <polygon points="22,3 41,22 22,41 3,22" strokeLinejoin="round" />
+              </svg>
+            </div>
+            <div className="text-center">
+              <div className="text-xs font-bold text-stone-900 dark:text-white">Raute / Rhombus</div>
+              <div className="text-[10px] text-stone-500 dark:text-stone-400 mt-0.5">
+                Gleichseitiges Viereck
+              </div>
+            </div>
+          </button>
         </div>
 
         {/* Customization: Border Color & Fill */}

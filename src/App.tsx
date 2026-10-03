@@ -146,6 +146,7 @@ export default function App() {
           onBack={handleBackToShelf}
           isDarkMode={isDarkMode}
           onToggleDarkMode={() => setIsDarkMode(prev => !prev)}
+          currentUser={currentUser}
         />
       ) : (
         <NotebookShelf

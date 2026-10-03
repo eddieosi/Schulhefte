@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Stroke, Point, ToolType } from '../types/notebook';
+import { recognizeHanddrawnShape } from '../utils/shapeRecognizer';
 
 interface DrawingCanvasProps {
   width: number;
@@ -13,6 +14,10 @@ interface DrawingCanvasProps {
   onStrokesChange: (strokes: Stroke[]) => void;
   onStartDrawing?: () => void;
   isDarkMode?: boolean;
+  isShapeRecognitionEnabled?: boolean;
+  onShapeRecognized?: (label: string) => void;
+  arrowStyle?: 'solid' | 'dotted';
+  arrowHead?: 'none' | 'end' | 'both';
 }
 
 function hexToRgba(hex: string): { r: number; g: number; b: number; a: number } {
@@ -97,6 +102,61 @@ function executeFloodFill(
   ctx.putImageData(imgData, 0, 0);
 }
 
+// Distance from point (px, py) to line segment (x1, y1)-(x2, y2) squared
+function distToSegmentSquared(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  const l2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
+  if (l2 === 0) return (px - x1) * (px - x1) + (py - y1) * (py - y1);
+  let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  const projX = x1 + t * (x2 - x1);
+  const projY = y1 + t * (y2 - y1);
+  return (px - projX) * (px - projX) + (py - projY) * (py - projY);
+}
+
+// Checks if an eraser circle at (cx, cy) with given radius intersects any part of a stroke
+function strokeIntersectsCircle(stroke: Stroke, cx: number, cy: number, radius: number): boolean {
+  const pts = stroke.points;
+  if (!pts || pts.length === 0) return false;
+
+  const effectiveRadius = Math.max(26, radius) + (stroke.size || 2) / 2;
+  const radiusSq = effectiveRadius * effectiveRadius;
+
+  // 1. Single dot tap or flood fill origin
+  if (pts.length === 1 || stroke.tool === 'fill') {
+    const pt = pts[0];
+    const dx = pt.x - cx;
+    const dy = pt.y - cy;
+    const fillAllowance = stroke.tool === 'fill' ? (radiusSq * 4) : radiusSq;
+    return (dx * dx + dy * dy) <= fillAllowance;
+  }
+
+  // 2. Simple straight 2-point line or arrow
+  if (pts.length === 2) {
+    return distToSegmentSquared(cx, cy, pts[0].x, pts[0].y, pts[1].x, pts[1].y) <= radiusSq;
+  }
+
+  // 3. Multi-point curve, polygon or shape: check EVERY contiguous line segment
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    if (distToSegmentSquared(cx, cy, p1.x, p1.y, p2.x, p2.y) <= radiusSq) {
+      return true;
+    }
+  }
+
+  // 4. For closed loops / recognized shapes (circle, rectangle, triangle, rhombus):
+  // also check segment connecting last point back to first point
+  if (stroke.recognizedShape || pts.length >= 3) {
+    const first = pts[0];
+    const last = pts[pts.length - 1];
+    if (distToSegmentSquared(cx, cy, last.x, last.y, first.x, first.y) <= radiusSq) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   width,
   height,
@@ -108,11 +168,23 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   stylusOnlyMode,
   onStrokesChange,
   onStartDrawing,
+  isShapeRecognitionEnabled = true,
+  onShapeRecognized,
+  arrowStyle = 'solid',
+  arrowHead = 'end',
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const currentStrokeRef = useRef<Stroke | null>(null);
   const isDrawingRef = useRef(false);
   const autoStraightenTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Keep live reference to strokes to avoid stale closure during rapid eraser actions
+  const strokesRef = useRef<Stroke[]>(strokes);
+  useEffect(() => {
+    strokesRef.current = strokes;
+  }, [strokes]);
+
+  const lastEraserPosRef = useRef<{ x: number; y: number } | null>(null);
 
   // Render all strokes onto the canvas
   const renderAllStrokes = useCallback(() => {
@@ -158,6 +230,77 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctx.lineWidth = stroke.size;
       ctx.lineCap = 'square';
       ctx.lineJoin = 'bevel';
+    } else if (stroke.tool === 'arrow') {
+      ctx.globalAlpha = 1.0;
+      ctx.strokeStyle = stroke.color;
+      ctx.fillStyle = stroke.color;
+      ctx.lineWidth = stroke.size;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      if (stroke.isDotted || stroke.arrowStyle === 'dotted') {
+        ctx.setLineDash([stroke.size * 1.5, stroke.size * 2]);
+      } else {
+        ctx.setLineDash([]);
+      }
+
+      if (points.length >= 2) {
+        const first = points[0];
+        const last = points[points.length - 1];
+
+        // Draw stem line
+        ctx.beginPath();
+        ctx.moveTo(first.x, first.y);
+        ctx.lineTo(last.x, last.y);
+        ctx.stroke();
+
+        // Draw Arrow Head at end
+        ctx.setLineDash([]); // arrow head is always solid
+        const angle = Math.atan2(last.y - first.y, last.x - first.x);
+        const headLen = Math.max(12, stroke.size * 3.4);
+        const headAngle = 0.48; // ~28 degrees
+
+        ctx.beginPath();
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(
+          last.x - headLen * Math.cos(angle - headAngle),
+          last.y - headLen * Math.sin(angle - headAngle)
+        );
+        ctx.lineTo(
+          last.x - (headLen * 0.72) * Math.cos(angle),
+          last.y - (headLen * 0.72) * Math.sin(angle)
+        );
+        ctx.lineTo(
+          last.x - headLen * Math.cos(angle + headAngle),
+          last.y - headLen * Math.sin(angle + headAngle)
+        );
+        ctx.closePath();
+        ctx.fill();
+
+        // Draw Arrow Head at start if both
+        if (stroke.arrowHead === 'both') {
+          const startAngle = Math.atan2(first.y - last.y, first.x - last.x);
+          ctx.beginPath();
+          ctx.moveTo(first.x, first.y);
+          ctx.lineTo(
+            first.x - headLen * Math.cos(startAngle - headAngle),
+            first.y - headLen * Math.sin(startAngle - headAngle)
+          );
+          ctx.lineTo(
+            first.x - (headLen * 0.72) * Math.cos(startAngle),
+            first.y - (headLen * 0.72) * Math.sin(startAngle)
+          );
+          ctx.lineTo(
+            first.x - headLen * Math.cos(startAngle + headAngle),
+            first.y - headLen * Math.sin(startAngle + headAngle)
+          );
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      ctx.restore();
+      return;
     } else if (stroke.tool === 'pencil') {
       // Authentic Bleistift (Graphite pencil with soft edges & natural texture)
       ctx.globalAlpha = 0.82;
@@ -188,7 +331,28 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctx.setLineDash([]);
     }
 
-    if (stroke.isStraight && points.length >= 2) {
+    if (stroke.recognizedShape && stroke.recognizedShape !== 'none' && points.length >= 3) {
+      // Clean recognized geometric shape (circle, rectangle, triangle, rhombus)
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x, points[i].y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+
+      if (stroke.tool === 'pencil') {
+        ctx.globalAlpha = 0.35;
+        ctx.lineWidth = Math.max(0.6, stroke.size * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(points[0].x + 0.3, points[0].y + 0.3);
+        for (let i = 1; i < points.length; i++) {
+          ctx.lineTo(points[i].x + 0.3, points[i].y + 0.3);
+        }
+        ctx.closePath();
+        ctx.stroke();
+      }
+    } else if (stroke.isStraight && points.length >= 2) {
       // Straight line
       const first = points[0];
       const last = points[points.length - 1];
@@ -304,7 +468,26 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     // Eraser tool
     if (activeTool === 'eraser') {
-      eraseStrokeAt(x, y, strokeSize * 2.5);
+      lastEraserPosRef.current = { x, y };
+      eraseStrokesAlong(x, y, Math.max(28, strokeSize * 3.5));
+      return;
+    }
+
+    // Arrow Tool
+    if (activeTool === 'arrow') {
+      const newStroke: Stroke = {
+        id: 's-arr-' + Date.now() + '-' + Math.random().toString(36).substring(2, 5),
+        tool: 'arrow',
+        color: strokeColor,
+        size: strokeSize,
+        opacity: 1.0,
+        points: [{ x, y }, { x, y }],
+        isStraight: true,
+        arrowStyle: arrowStyle || 'solid',
+        arrowHead: arrowHead || 'end',
+      };
+      currentStrokeRef.current = newStroke;
+      renderAllStrokes();
       return;
     }
 
@@ -354,11 +537,18 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     const pressure = e.pressure > 0 ? e.pressure : 0.5;
 
     if (activeTool === 'eraser') {
-      eraseStrokeAt(x, y, strokeSize * 2.5);
+      eraseStrokesAlong(x, y, Math.max(28, strokeSize * 3.5));
       return;
     }
 
     if (!currentStrokeRef.current) return;
+
+    // Arrow dragging
+    if (activeTool === 'arrow') {
+      currentStrokeRef.current.points[1] = { x, y };
+      renderAllStrokes();
+      return;
+    }
 
     const points = currentStrokeRef.current.points;
     const lastPoint = points[points.length - 1];
@@ -368,16 +558,26 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     points.push({ x, y, pressure });
 
-    // Auto-straighten timer: holding pen still for 650ms snaps stroke straight!
+    // Auto-straighten or Shape Recognition hold timer (holding pen still for 600ms)
     if (autoStraightenTimerRef.current) {
       clearTimeout(autoStraightenTimerRef.current);
     }
     autoStraightenTimerRef.current = setTimeout(() => {
       if (isDrawingRef.current && currentStrokeRef.current && currentStrokeRef.current.points.length > 5) {
+        if (isShapeRecognitionEnabled && currentStrokeRef.current.tool !== 'arrow') {
+          const rec = recognizeHanddrawnShape(currentStrokeRef.current.points);
+          if (rec) {
+            currentStrokeRef.current.points = rec.points;
+            currentStrokeRef.current.recognizedShape = rec.type;
+            onShapeRecognized?.(rec.label);
+            renderAllStrokes();
+            return;
+          }
+        }
         currentStrokeRef.current.isStraight = true;
         renderAllStrokes();
       }
-    }, 650);
+    }, 600);
 
     renderAllStrokes();
   };
@@ -395,23 +595,69 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {}
 
+    lastEraserPosRef.current = null;
     if (activeTool === 'eraser') return;
 
     if (currentStrokeRef.current && currentStrokeRef.current.points.length > 0) {
-      const finished = { ...currentStrokeRef.current };
+      let finished = { ...currentStrokeRef.current };
       currentStrokeRef.current = null;
+
+      // Automatic Shape Recognition upon lifting pen (Formerkennung)
+      if (
+        isShapeRecognitionEnabled &&
+        finished.tool !== 'eraser' &&
+        finished.tool !== 'fill' &&
+        finished.tool !== 'arrow'
+      ) {
+        const recognized = recognizeHanddrawnShape(finished.points);
+        if (recognized) {
+          finished = {
+            ...finished,
+            points: recognized.points,
+            recognizedShape: recognized.type,
+            isStraight: false,
+          };
+          onShapeRecognized?.(recognized.label);
+        }
+      }
+
       onStrokesChange([...strokes, finished]);
     }
   };
 
-  // Erase strokes near coordinates
-  const eraseStrokeAt = (x: number, y: number, radius: number) => {
-    const updated = strokes.filter(s => {
-      return !s.points.some(pt => Math.hypot(pt.x - x, pt.y - y) <= radius);
+  // Erase strokes along coordinates using continuous line-segment intersection with interpolation
+  const eraseStrokesAlong = (x: number, y: number, radius: number) => {
+    const currentList = strokesRef.current;
+    const lastPos = lastEraserPosRef.current;
+    lastEraserPosRef.current = { x, y };
+
+    // Build dense interpolation points between lastPos and current (x, y)
+    // to guarantee no strokes are skipped during rapid pointer movement
+    const samplePoints: { x: number; y: number }[] = [{ x, y }];
+    if (lastPos) {
+      const dist = Math.hypot(x - lastPos.x, y - lastPos.y);
+      const steps = Math.max(1, Math.ceil(dist / 10));
+      for (let s = 1; s <= steps; s++) {
+        samplePoints.push({
+          x: lastPos.x + (x - lastPos.x) * (s / steps),
+          y: lastPos.y + (y - lastPos.y) * (s / steps),
+        });
+      }
+    }
+
+    const updated = currentList.filter(s => {
+      for (const pt of samplePoints) {
+        if (strokeIntersectsCircle(s, pt.x, pt.y, radius)) {
+          return false;
+        }
+      }
+      return true;
     });
 
-    if (updated.length !== strokes.length) {
+    if (updated.length !== currentList.length) {
+      strokesRef.current = updated;
       onStrokesChange(updated);
+      renderAllStrokes();
     }
   };
 

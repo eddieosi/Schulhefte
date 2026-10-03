@@ -26,14 +26,14 @@ export const TutorialModal: React.FC<TutorialModalProps> = ({ isOpen, onClose })
 
   const steps = [
     {
-      title: 'Willkommen bei Schulheft Pro',
-      subtitle: 'Deine digitale Schultasche für Tablet, Android & Browser',
+      title: 'Willkommen bei Schulhefte',
+      subtitle: 'Deine digitale Schultasche für Tablet & Browser',
       icon: BookOpen,
       iconColor: 'bg-blue-600 text-white',
       content: (
         <div className="space-y-3 text-stone-600 dark:text-stone-300 text-sm">
           <p>
-            Schulheft Pro bringt das klassische Schulheft-Gefühl auf dein Tablet und Smartphone – optimiert für Stylus- und Stifteingabe mit echter Handballen-Erkennung.
+            Schulhefte bringt das klassische Schulheft-Gefühl auf dein Tablet und Smartphone – optimiert für Stylus- und Stifteingabe mit echter Handballen-Erkennung.
           </p>
           <div className="grid grid-cols-2 gap-2 pt-2">
             <div className="p-3 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/50">

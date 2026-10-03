@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { Notebook, SearchResult, RulingType, User } from '../types/notebook';
 import { NotebookCover } from './NotebookCover';
-import { PWAInstallButton } from './PWAInstallButton';
+import { ModernAppLogo } from './ModernAppLogo';
 import { OfflineIndicator } from './OfflineIndicator';
 import { UserManagementModal } from './UserManagementModal';
+import { AdminLogModal } from './AdminLogModal';
 import { 
   Plus, 
   Search, 
@@ -20,6 +21,7 @@ import {
   LogOut,
   ShieldCheck,
   RefreshCw,
+  Terminal,
   User as UserIcon
 } from 'lucide-react';
 import { api } from '../services/api';
@@ -61,6 +63,7 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
   const [selectedSubject, setSelectedSubject] = useState<string>('Alle');
   const [sortBy, setSortBy] = useState<SortOption>('updated_desc');
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
+  const [isAdminLogOpen, setIsAdminLogOpen] = useState(false);
 
   // New Notebook Modal state
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -288,18 +291,13 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
       <header className="sticky top-0 z-40 bg-white/80 dark:bg-stone-900/80 backdrop-blur-md border-b border-stone-200 dark:border-stone-800 px-4 sm:px-8 py-3.5 flex items-center justify-between">
         {/* Brand / Logo */}
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20">
-            <BookOpen className="w-5 h-5" />
-          </div>
+          <ModernAppLogo size="md" className="group-hover:scale-105 transition-transform" />
           <div>
             <h1 className="text-lg font-black tracking-tight text-stone-900 dark:text-white flex items-center gap-2">
-              Schulheft Pro
-              <span className="hidden sm:inline-block px-2 py-0.5 text-[10px] font-bold rounded-md bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
-                PWA & Android
-              </span>
+              Schulhefte
             </h1>
             <p className="text-[11px] text-stone-500 dark:text-stone-400 hidden sm:block">
-              Dateibasiertes Schulheft für Stifteingabe & Geometrie
+              Dateibasierte Hefte & Geometrie-Arbeitsplatz
             </p>
           </div>
         </div>
@@ -375,15 +373,12 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
           {/* Offline / Sync Status */}
           <OfflineIndicator />
 
-          {/* PWA Install */}
-          <PWAInstallButton />
-
-          {/* Version & PWA Update Check Button */}
+          {/* Version Update Check Button */}
           <button
             onClick={handleCheckForUpdates}
             disabled={isCheckingUpdate}
             className="p-2 rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition active:scale-95 relative"
-            title="Auf App-Updates prüfen (PWA & Version)"
+            title="Auf App-Updates prüfen"
           >
             <RefreshCw className={`w-4 h-4 ${isCheckingUpdate ? 'animate-spin text-blue-600 dark:text-blue-400' : ''}`} />
           </button>
@@ -396,6 +391,23 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
           >
             <CloudDownload className="w-4 h-4" />
           </button>
+
+          {/* Backend Server-Logs Modal trigger (Admin only) */}
+          {currentUser.role === 'admin' && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsAdminLogOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 text-xs font-semibold shadow-sm transition active:scale-95 cursor-pointer"
+              title="Backend Server-Logs anzeigen (Administrator)"
+            >
+              <Terminal className="w-3.5 h-3.5" />
+              <span>Server-Log</span>
+            </button>
+          )}
 
           {/* Interactive Tutorial Button */}
           <button
@@ -960,6 +972,12 @@ export const NotebookShelf: React.FC<NotebookShelfProps> = ({
         onClose={() => setIsUserModalOpen(false)}
         currentUser={currentUser}
         onUsersChanged={onRefresh}
+      />
+
+      {/* BACKEND SERVER-LOG MODAL (ADMIN ONLY) */}
+      <AdminLogModal
+        isOpen={isAdminLogOpen}
+        onClose={() => setIsAdminLogOpen(false)}
       />
     </div>
   );

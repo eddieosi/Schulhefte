@@ -18,6 +18,8 @@ export function getAuthToken(): string | null {
   return localStorage.getItem(STORAGE_KEY_TOKEN);
 }
 
+export const getStoredToken = getAuthToken;
+
 export function getStoredUser(): User | null {
   const raw = localStorage.getItem(STORAGE_KEY_USER);
   if (!raw) return null;

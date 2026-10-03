@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ImageElement } from '../types/notebook';
-import { GripVertical, Trash2, Maximize2 } from 'lucide-react';
+import { GripVertical, Trash2, Maximize2, Crop } from 'lucide-react';
+import { ImageCropModal } from './ImageCropModal';
 
 interface PageImageProps {
   image: ImageElement;
@@ -21,6 +22,7 @@ export const PageImage: React.FC<PageImageProps> = ({
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [isCropModalOpen, setIsCropModalOpen] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0, initialX: 0, initialY: 0 });
   const resizeStartRef = useRef({ x: 0, y: 0, initialW: 0, initialH: 0, mode: 'corner' as 'corner' | 'width' | 'height' });
 
@@ -142,10 +144,25 @@ export const PageImage: React.FC<PageImageProps> = ({
             <span className="text-[11px] font-bold uppercase tracking-wider">Bild bewegen</span>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] text-stone-400 font-mono hidden sm:inline">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-stone-400 font-mono hidden sm:inline mr-1">
               {Math.round(image.width)} × {Math.round(image.height)}
             </span>
+
+            {/* Zuschneiden Button */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsCropModalOpen(true);
+              }}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900/50 text-blue-600 dark:text-blue-400 font-semibold text-[11px] transition active:scale-95"
+              title="Bild zuschneiden"
+            >
+              <Crop className="w-3.5 h-3.5" />
+              <span>Zuschneiden</span>
+            </button>
+
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -206,6 +223,25 @@ export const PageImage: React.FC<PageImageProps> = ({
           </div>
         )}
       </div>
+
+      {/* Interactive Image Crop Modal */}
+      {isCropModalOpen && (
+        <ImageCropModal
+          isOpen={isCropModalOpen}
+          imageUrl={image.url}
+          initialWidth={image.width}
+          initialHeight={image.height}
+          onApply={(croppedDataUrl, newW, newH) => {
+            onUpdate({
+              ...image,
+              url: croppedDataUrl,
+              width: newW,
+              height: newH,
+            });
+          }}
+          onClose={() => setIsCropModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

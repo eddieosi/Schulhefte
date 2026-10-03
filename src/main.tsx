@@ -10,7 +10,7 @@ const updateSW = registerSW({
     window.dispatchEvent(new CustomEvent('pwa-update-available'));
   },
   onOfflineReady() {
-    console.log('Schulheft Pro ist offline einsatzbereit');
+    console.log('Schulhefte ist offline einsatzbereit');
   },
   onRegisteredSW(swUrl, registration) {
     if (registration) {

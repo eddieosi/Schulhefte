@@ -8,9 +8,9 @@ export type RulingType =
   | 'vokabeln'      // 2 Spalten Vokabelheft mit Trennlinie
   | 'noten';        // Notenlinien
 
-export type ToolType = 'pen' | 'pencil' | 'brush' | 'highlighter' | 'eraser' | 'text' | 'image' | 'pan' | 'fill' | 'shape' | 'laser' | 'table';
+export type ToolType = 'pen' | 'pencil' | 'brush' | 'highlighter' | 'eraser' | 'text' | 'image' | 'pan' | 'fill' | 'shape' | 'laser' | 'table' | 'arrow';
 
-export type ShapeType = 'rectangle' | 'rounded_rectangle' | 'circle' | 'triangle';
+export type ShapeType = 'rectangle' | 'rounded_rectangle' | 'circle' | 'triangle' | 'rhombus';
 
 export interface ShapeElement {
   id: string;
@@ -33,9 +33,13 @@ export interface TableElement {
   id: string;
   x: number;
   y: number;
+  width?: number;
+  rowHeight?: number;
+  fontSize?: number;
   rows: number;
   cols: number;
   headers?: string[];
+  showHeader?: boolean;
   data: string[][];
   isVocabMode?: boolean;
   revealedCells?: Record<string, boolean>;
@@ -49,13 +53,16 @@ export interface Point {
 
 export interface Stroke {
   id: string;
-  tool: 'pen' | 'pencil' | 'brush' | 'highlighter' | 'eraser' | 'fill';
+  tool: 'pen' | 'pencil' | 'brush' | 'highlighter' | 'eraser' | 'fill' | 'arrow';
   color: string;
   size: number;
   opacity?: number;
   points: Point[];
   isStraight?: boolean;
   isDotted?: boolean;
+  arrowHead?: 'none' | 'end' | 'both';
+  arrowStyle?: 'solid' | 'dotted';
+  recognizedShape?: 'circle' | 'rectangle' | 'triangle' | 'rhombus' | 'none';
 }
 
 export interface TextBox {

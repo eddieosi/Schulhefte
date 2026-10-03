@@ -146,6 +146,16 @@ export const PageShape: React.FC<PageShapeProps> = ({
             strokeWidth={sw}
           />
         );
+      case 'rhombus':
+        return (
+          <polygon
+            points={`${w / 2},${pad / 2} ${w - pad / 2},${h / 2} ${w / 2},${h - pad / 2} ${pad / 2},${h / 2}`}
+            fill={shape.fillColor || 'transparent'}
+            stroke={shape.strokeColor}
+            strokeWidth={sw}
+            strokeLinejoin="round"
+          />
+        );
       case 'rectangle':
       default:
         return (

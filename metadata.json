@@ -1,5 +1,5 @@
 {
-  "name": "Schulheft Pro - Digitales Schulheft für PWA & Android",
+  "name": "Schulhefte - Digitales Schulheft für Tablet & Browser",
   "description": "Digitale Schulhefte mit Stifteingabe, Geodreieck, Lineal, Marker, OCR-Volltextsuche, PDF-Export und Datei-basierter Ordnerstruktur.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

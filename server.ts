@@ -57,12 +57,83 @@ const USERS_FILE = path.join(BASE_DATA_DIR, 'users.json');
 const USERS_DIR = path.join(BASE_DATA_DIR, 'users');
 const SESSIONS_FILE = path.join(BASE_DATA_DIR, 'sessions.json');
 const LEGACY_NOTEBOOKS_DIR = path.join(BASE_DATA_DIR, 'notebooks');
+const LOGS_DIR = path.join(BASE_DATA_DIR, 'logs');
+const LOG_FILE = path.join(LOGS_DIR, 'server.log');
+const SHARES_DIR = path.join(BASE_DATA_DIR, 'shares');
 
 if (!fs.existsSync(BASE_DATA_DIR)) {
   fs.mkdirSync(BASE_DATA_DIR, { recursive: true });
 }
 if (!fs.existsSync(USERS_DIR)) {
   fs.mkdirSync(USERS_DIR, { recursive: true });
+}
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
+}
+if (!fs.existsSync(SHARES_DIR)) {
+  fs.mkdirSync(SHARES_DIR, { recursive: true });
+}
+
+// ================= BACKEND LOGGING SYSTEM =================
+export interface BackendLogEntry {
+  id: string;
+  timestamp: string;
+  level: 'INFO' | 'WARN' | 'ERROR';
+  category: 'AUTH' | 'NOTEBOOK' | 'SYNC' | 'SYSTEM' | 'API';
+  message: string;
+  user?: string;
+  ip?: string;
+}
+
+const recentLogs: BackendLogEntry[] = [];
+const MAX_LOGS_MEMORY = 500;
+
+export function logServer(
+  level: 'INFO' | 'WARN' | 'ERROR',
+  category: BackendLogEntry['category'],
+  message: string,
+  user?: string,
+  req?: Request
+) {
+  const timestamp = new Date().toISOString();
+  let ip: string | undefined;
+  if (req) {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string') {
+      ip = forwarded.split(',')[0].trim();
+    } else if (req.socket?.remoteAddress) {
+      ip = req.socket.remoteAddress;
+    }
+  }
+
+  const entry: BackendLogEntry = {
+    id: Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+    timestamp,
+    level,
+    category,
+    message,
+    user,
+    ip,
+  };
+
+  recentLogs.unshift(entry);
+  if (recentLogs.length > MAX_LOGS_MEMORY) {
+    recentLogs.pop();
+  }
+
+  const formattedLine = `[${timestamp}] [${level.padEnd(5)}] [${category.padEnd(8)}] ${user ? `[User: ${user}] ` : ''}${message}`;
+  
+  if (level === 'ERROR') {
+    console.error(formattedLine);
+  } else if (level === 'WARN') {
+    console.warn(formattedLine);
+  } else {
+    console.log(formattedLine);
+  }
+
+  try {
+    fs.appendFileSync(LOG_FILE, formattedLine + '\n');
+  } catch {}
 }
 
 // Hash password helper
@@ -122,6 +193,7 @@ function getUsers(): UserRecord[] {
     };
     users.unshift(defaultAdmin);
     saveUsers(users);
+    logServer('INFO', 'AUTH', 'Initialer Standard-Admin angelegt: Benutzername="admin" | Passwort="admin123"');
   }
 
   return users;
@@ -510,8 +582,11 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
     }
 
     if (!authenticatedUser) {
+      logServer('WARN', 'AUTH', `Fehlgeschlagener Anmeldeversuch für "${username}" (falsches Passwort oder unbekannt)`, cleanUser, req);
       return res.status(401).json({ error: 'Ungültiger Benutzername oder falsches Passwort' });
     }
+
+    logServer('INFO', 'AUTH', `Erfolgreiche Anmeldung: "${authenticatedUser.username}" (${authenticatedUser.role})`, authenticatedUser.username, req);
 
     // Generate session token
     const token = 'stk_' + crypto.randomBytes(24).toString('hex');
@@ -556,6 +631,10 @@ app.post('/api/auth/logout', (req: Request, res: Response) => {
     token = authHeader.trim();
   }
   if (token) {
+    const sess = activeSessions.get(token);
+    if (sess) {
+      logServer('INFO', 'AUTH', `Abmeldung für Benutzer "${sess.username}"`, sess.username, req);
+    }
     activeSessions.delete(token);
     saveSessions();
   }
@@ -726,6 +805,118 @@ app.delete('/api/users/:id', authenticate, requireAdmin, (req: Request, res: Res
   } catch (error) {
     console.error('Delete user error:', error);
     res.status(500).json({ error: 'Fehler beim Löschen des Benutzers' });
+  }
+});
+
+// ================= BACKEND LOGS =================
+
+// Public read of system / startup logs (e.g. for login screen inspection)
+app.get('/api/system/logs', (req: Request, res: Response) => {
+  const limit = Math.min(250, parseInt(req.query.limit as string, 10) || 100);
+  const level = req.query.level as string;
+  let filtered = recentLogs;
+  if (level && ['INFO', 'WARN', 'ERROR'].includes(level)) {
+    filtered = filtered.filter(l => l.level === level);
+  }
+  res.json({
+    total: recentLogs.length,
+    logs: filtered.slice(0, limit),
+  });
+});
+
+// Get recent backend logs (Admin)
+app.get('/api/admin/logs', authenticate, requireAdmin, (req: Request, res: Response) => {
+  const limit = Math.min(300, parseInt(req.query.limit as string, 10) || 100);
+  const level = req.query.level as string;
+  let filtered = recentLogs;
+  if (level && ['INFO', 'WARN', 'ERROR'].includes(level)) {
+    filtered = filtered.filter(l => l.level === level);
+  }
+  res.json({
+    total: recentLogs.length,
+    logs: filtered.slice(0, limit),
+    logFile: LOG_FILE,
+  });
+});
+
+// Clear backend logs
+app.delete('/api/admin/logs', authenticate, requireAdmin, (req: Request, res: Response) => {
+  recentLogs.length = 0;
+  try {
+    fs.writeFileSync(LOG_FILE, '');
+  } catch {}
+  logServer('INFO', 'SYSTEM', 'Server-Logs wurden vom Administrator zurückgesetzt', req.user?.username, req);
+  res.json({ success: true });
+});
+
+// Download log file as text
+app.get('/api/admin/logs/download', authenticate, requireAdmin, (_req: Request, res: Response) => {
+  if (fs.existsSync(LOG_FILE)) {
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename=schulhefte-backend-log-${Date.now()}.log`);
+    res.sendFile(LOG_FILE);
+  } else {
+    res.status(404).json({ error: 'Keine Logdatei vorhanden' });
+  }
+});
+
+// ================= QR CODE PAGE SHARING & TRANSFER =================
+
+// Create snapshot of a page to share via QR code
+app.post('/api/share/page', (req: Request, res: Response) => {
+  try {
+    const { page, notebookTitle } = req.body;
+    if (!page) {
+      return res.status(400).json({ error: 'Keine Seitendaten übergeben' });
+    }
+
+    // Optional user identification if logged in
+    let creator = 'Schüler';
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      const session = activeSessions.get(token);
+      if (session) {
+        creator = session.username;
+      }
+    }
+
+    const shareId = 'p-' + crypto.randomBytes(6).toString('hex');
+    const shareData = {
+      shareId,
+      notebookTitle: notebookTitle || 'Geteiltes Schulheft',
+      page,
+      creator,
+      createdAt: new Date().toISOString(),
+    };
+
+    const filePath = path.join(SHARES_DIR, `${shareId}.json`);
+    fs.writeFileSync(filePath, JSON.stringify(shareData, null, 2));
+
+    logServer('INFO', 'NOTEBOOK', `Seite per QR-Code freigegeben (ID: ${shareId})`, req.user?.username, req);
+    res.json({ success: true, shareId });
+  } catch (error) {
+    console.error('Error sharing page:', error);
+    res.status(500).json({ error: 'Fehler beim Erstellen der QR-Code Freigabe' });
+  }
+});
+
+// Retrieve shared page for QR code import
+app.get('/api/share/page/:shareId', (_req: Request, res: Response) => {
+  try {
+    const { shareId } = _req.params;
+    const safeId = (shareId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    const filePath = path.join(SHARES_DIR, `${safeId}.json`);
+
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Geteilte Seite nicht gefunden oder abgelaufen' });
+    }
+
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching shared page:', error);
+    res.status(500).json({ error: 'Fehler beim Laden der freigegebenen Seite' });
   }
 });
 
@@ -1322,7 +1513,14 @@ async function setupVite() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Schulheft Server running on http://0.0.0.0:${PORT}`);
+    console.log('================================================================');
+    console.log(`[Schulhefte Server] Gestartet auf Port ${PORT} (http://0.0.0.0:${PORT})`);
+    console.log('[Schulhefte Server] Standard-Admin Initialzugang:');
+    console.log('                    Benutzername: "admin"');
+    console.log('                    Passwort:     "admin123"');
+    console.log('================================================================');
+    logServer('INFO', 'SYSTEM', `Schulhefte Server gestartet auf Port ${PORT}`);
+    logServer('INFO', 'SYSTEM', 'Standard-Admin Zugang: Benutzername="admin" | Passwort="admin123"');
   });
 }
 

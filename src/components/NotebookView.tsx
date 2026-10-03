@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Notebook, Page, Stroke, Point, TextBox, ImageElement, ShapeElement, ShapeType, ToolType, RulingType, TableElement, PageGroupTag } from '../types/notebook';
+import { Notebook, Page, Stroke, Point, TextBox, ImageElement, ShapeElement, ShapeType, ToolType, RulingType, TableElement, PageGroupTag, User } from '../types/notebook';
 import { PageRuling } from './PageRuling';
 import { DrawingCanvas } from './DrawingCanvas';
 import { PageTextBox } from './PageTextBox';
@@ -12,10 +12,15 @@ import { Zirkel } from './Zirkel';
 import { LaserPointerCanvas } from './LaserPointerCanvas';
 import { PageTable } from './PageTable';
 import { PageGroupModal } from './PageGroupModal';
+import { PageQRCodeModal } from './PageQRCodeModal';
+import { AdminLogModal } from './AdminLogModal';
+import { unpackPageFromCompressedBase64 } from '../utils/qrPagePacker';
 import { exportNotebookToPDF } from '../utils/pdfExport';
 import { api } from '../services/api';
 import {
   ArrowLeft,
+  ArrowRight,
+  Wand2,
   ChevronLeft,
   ChevronRight,
   Plus,
@@ -52,6 +57,8 @@ import {
   Radio,
   Tag,
   Bookmark,
+  QrCode,
+  Terminal,
   X
 } from 'lucide-react';
 
@@ -61,6 +68,7 @@ interface NotebookViewProps {
   onBack: () => void;
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
+  currentUser?: User;
 }
 
 export const NotebookView: React.FC<NotebookViewProps> = ({
@@ -69,11 +77,13 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
   onBack,
   isDarkMode,
   onToggleDarkMode,
+  currentUser,
 }) => {
   const [notebook, setNotebook] = useState<Notebook | null>(null);
   const [pages, setPages] = useState<Page[]>([]);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [isAdminLogOpen, setIsAdminLogOpen] = useState(false);
 
   // Undo / Redo history per active page
   const [undoStack, setUndoStack] = useState<Record<string, Stroke[][]>>({});
@@ -86,6 +96,12 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
   const [isStraightLineMode, setIsStraightLineMode] = useState(false);
   const [stylusOnlyMode, setStylusOnlyMode] = useState(false); // Palm rejection / Handballenschutz
 
+  // Formerkennung (Auto-Shape Recognition) & Pfeil-Einstellungen
+  const [isShapeRecognitionEnabled, setIsShapeRecognitionEnabled] = useState(true);
+  const [shapeNotice, setShapeNotice] = useState<string | null>(null);
+  const [arrowStyle, setArrowStyle] = useState<'solid' | 'dotted'>('solid');
+  const [arrowHead, setArrowHead] = useState<'end' | 'both'>('end');
+
   // Overlays
   const [isGeodreieckVisible, setIsGeodreieckVisible] = useState(false);
   const [isLinealVisible, setIsLinealVisible] = useState(false);
@@ -94,6 +110,9 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
 
   // Page Group Tag Modal State
   const [groupModalPageIndex, setGroupModalPageIndex] = useState<number | null>(null);
+
+  // QR Code Share & Scanner State
+  const [isQRModalOpen, setIsQRModalOpen] = useState(false);
 
   // Delete Page Modal State (avoids blocked window.confirm in iframes)
   const [isDeletePageModalOpen, setIsDeletePageModalOpen] = useState(false);
@@ -169,11 +188,9 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
   // Paper options
   const [darkPaper, setDarkPaper] = useState(false);
 
-  // PDF Export & OCR
+  // PDF Export
   const [isExportingPDF, setIsExportingPDF] = useState(false);
   const [pdfProgress, setPdfProgress] = useState<{ current: number; total: number } | null>(null);
-  const [isOCRProcessing, setIsOCRProcessing] = useState(false);
-  const [ocrSuccessMessage, setOcrSuccessMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -430,8 +447,8 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
       type,
       x: 140,
       y: 180,
-      width: type === 'circle' ? 160 : type === 'triangle' ? 180 : 200,
-      height: type === 'circle' ? 160 : type === 'triangle' ? 160 : 120,
+      width: type === 'circle' ? 160 : type === 'triangle' ? 180 : type === 'rhombus' ? 150 : 200,
+      height: type === 'circle' ? 160 : type === 'triangle' ? 160 : type === 'rhombus' ? 150 : 120,
       strokeColor: finalStroke,
       strokeWidth: finalWidth,
       fillColor: finalFill,
@@ -495,14 +512,18 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
       id: 'table-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
       x: 120,
       y: 200,
+      width: 420,
+      rowHeight: 34,
+      fontSize: 13,
+      showHeader: true,
       rows: 4,
       cols: 2,
-      headers: ['Vokabel / Begriff', 'Übersetzung / Bedeutung'],
+      headers: ['Spalte 1', 'Spalte 2'],
       data: [
-        ['apple', 'Apfel'],
-        ['book', 'Buch'],
-        ['school', 'Schule'],
-        ['pencil', 'Bleistift'],
+        ['', ''],
+        ['', ''],
+        ['', ''],
+        ['', ''],
       ],
       isVocabMode: false,
     };
@@ -531,6 +552,81 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
     setPages(prev => prev.map((p, idx) => idx === groupModalPageIndex ? updatedPage : p));
     triggerAutoSave(updatedPage);
   };
+
+  // Import page received via QR Code
+  const handleImportPageFromQR = (importedPage: Page) => {
+    if (!notebook) return;
+    const newPageNumber = pages.length + 1;
+    const newPage: Page = {
+      ...importedPage,
+      id: 'page-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+      notebookId: notebook.id,
+      pageNumber: newPageNumber,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updatedPages = [...pages, newPage];
+    setPages(updatedPages);
+    setCurrentPageIndex(updatedPages.length - 1);
+    triggerAutoSave(newPage);
+
+    const updatedNotebook: Notebook = {
+      ...notebook,
+      pageIds: [...notebook.pageIds, newPage.id],
+      updatedAt: new Date().toISOString(),
+    };
+    setNotebook(updatedNotebook);
+    api.updateNotebook(updatedNotebook.id, { pageIds: updatedNotebook.pageIds }).catch(console.error);
+
+    setShapeNotice('Seite erfolgreich per QR-Code importiert!');
+    setTimeout(() => setShapeNotice(null), 3000);
+  };
+
+  // Check for incoming shared page via QR code URL (#import-page=... or #page-data=...)
+  useEffect(() => {
+    const checkHashImport = async () => {
+      // 1. Direct packed page data in hash (#page-data=...)
+      if (window.location.hash.includes('#page-data=')) {
+        const b64 = window.location.hash.split('#page-data=')[1].split('&')[0];
+        try {
+          const { page: unpacked, notebookTitle: srcTitle } = unpackPageFromCompressedBase64(b64);
+          if (unpacked && notebook) {
+            if (confirm(`Geteilte Seite aus "${srcTitle || 'Schulheft'}" importieren und an dieses Heft anfügen?`)) {
+              handleImportPageFromQR(unpacked as Page);
+              window.history.replaceState(null, '', window.location.pathname);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to unpack page from hash:', err);
+        }
+        return;
+      }
+
+      // 2. Server share ID (#import-page=...)
+      if (window.location.hash.includes('#import-page=')) {
+        const shareId = window.location.hash.split('#import-page=')[1].split('&')[0];
+        if (shareId && notebook) {
+          try {
+            const res = await fetch(`/api/share/page/${shareId}`);
+            if (res.ok) {
+              const data = await res.json();
+              if (data.page) {
+                if (confirm(`Geteilte Seite aus "${data.notebookTitle || 'Schulheft'}" importieren und an dieses Heft anfügen?`)) {
+                  handleImportPageFromQR(data.page);
+                  window.history.replaceState(null, '', window.location.pathname);
+                }
+              }
+            }
+          } catch (err) {
+            console.error('Failed to import page from hash:', err);
+          }
+        }
+      }
+    };
+    checkHashImport();
+    window.addEventListener('hashchange', checkHashImport);
+    return () => window.removeEventListener('hashchange', checkHashImport);
+  }, [notebook?.id, pages.length]);
 
   // Add Image to active page
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -595,30 +691,40 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
     setSelectedElementId(null);
   };
 
-  // OCR Recognition on active page
-  const handleRunOCR = async () => {
-    if (!activePage || !notebook || isOCRProcessing) return;
-    setIsOCRProcessing(true);
+  // Automated background OCR on active page (runs silently every 5 minutes and on page changes)
+  const runSilentOCR = useCallback(async (targetPageIndex?: number) => {
+    const pIdx = targetPageIndex !== undefined ? targetPageIndex : currentPageIndex;
+    const targetPage = pages[pIdx];
+    if (!targetPage || !notebook) return;
+    if (!targetPage.strokes || targetPage.strokes.length === 0) return;
 
     try {
-      const activeContainer = pageRefs.current[currentPageIndex];
+      const activeContainer = pageRefs.current[pIdx];
       const canvasEl = activeContainer?.querySelector('canvas');
       const dataUrl = canvasEl ? canvasEl.toDataURL('image/png') : '';
+      if (!dataUrl) return;
 
-      await api.triggerOCR(notebook.id, activePage.id, dataUrl);
-      setOcrSuccessMessage('OCR-Handschrift erfolgreich erkannt & für Volltextsuche indexiert!');
-      setTimeout(() => setOcrSuccessMessage(null), 3500);
-
-      const p = await api.getPage(notebook.id, activePage.id);
+      await api.triggerOCR(notebook.id, targetPage.id, dataUrl);
+      const p = await api.getPage(notebook.id, targetPage.id);
       if (p) {
         setPages(prev => prev.map(item => item.id === p.id ? p : item));
       }
     } catch (err) {
-      console.error('OCR failed:', err);
-    } finally {
-      setIsOCRProcessing(false);
+      console.debug('Automated background OCR:', err);
     }
-  };
+  }, [notebook?.id, pages, currentPageIndex]);
+
+  // Periodic automatic OCR: Runs every 5 minutes in background
+  useEffect(() => {
+    if (!notebook) return;
+
+    // Run automatically every 5 minutes
+    const interval = setInterval(() => {
+      runSilentOCR();
+    }, 5 * 60 * 1000);
+
+    return () => clearInterval(interval);
+  }, [notebook?.id, runSilentOCR]);
 
   // PDF Export of all pages
   const handleExportPDF = async () => {
@@ -777,21 +883,6 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
             </select>
           )}
 
-          {/* OCR Trigger */}
-          <button
-            onClick={handleRunOCR}
-            disabled={isOCRProcessing}
-            className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/50 transition active:scale-95"
-            title="Handschrift auf dieser Seite erkennen & für Suche indexieren"
-          >
-            {isOCRProcessing ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Sparkles className="w-3.5 h-3.5" />
-            )}
-            <span className="hidden md:inline">OCR Volltext</span>
-          </button>
-
           {/* PDF Export */}
           <button
             onClick={handleExportPDF}
@@ -811,6 +902,18 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
               </>
             )}
           </button>
+
+          {/* QR Code Share & Import */}
+          {activePage && (
+            <button
+              onClick={() => setIsQRModalOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1 text-xs font-bold rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50 shadow-sm transition active:scale-95"
+              title="Seite per QR-Code mit anderem Tablet/Handy teilen oder einlesen"
+            >
+              <QrCode className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+              <span className="hidden sm:inline">QR-Teilen</span>
+            </button>
+          )}
 
           {/* Dark Paper Switch */}
           <button
@@ -837,13 +940,27 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
           >
             {isFullscreen ? <Minimize className="w-3.5 h-3.5" /> : <Maximize className="w-3.5 h-3.5" />}
           </button>
+
+          {/* Admin Server-Log trigger */}
+          {currentUser?.role === 'admin' && (
+            <button
+              type="button"
+              onClick={() => setIsAdminLogOpen(true)}
+              className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 shadow-sm transition active:scale-95 cursor-pointer"
+              title="Backend Server-Logs anzeigen (Administrator)"
+            >
+              <Terminal className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Server-Log</span>
+            </button>
+          )}
         </div>
       </header>
 
-      {/* OCR Success Toast */}
-      {ocrSuccessMessage && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-violet-600 text-white text-xs font-bold shadow-xl border border-violet-400/40 animate-in fade-in slide-in-from-top-2">
-          {ocrSuccessMessage}
+      {/* Formerkennung Success Toast */}
+      {shapeNotice && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-xl border border-emerald-400/40 animate-in fade-in slide-in-from-top-2 flex items-center gap-1.5 pointer-events-none">
+          <Wand2 className="w-3.5 h-3.5 text-emerald-200" />
+          <span>{shapeNotice} korrigiert ✓</span>
         </div>
       )}
 
@@ -946,6 +1063,22 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
             <Minus className="w-4 h-4 stroke-[3]" />
           </button>
 
+          {/* Pfeil-Werkzeug */}
+          <button
+            onClick={() => {
+              handleSelectTool('arrow');
+              setSelectedElementId(null);
+            }}
+            className={`p-2 rounded-xl text-xs font-semibold transition ${
+              activeTool === 'arrow'
+                ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+                : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800'
+            }`}
+            title="Pfeil-Werkzeug: Gerade Pfeile mit einstellbarer Stärke (dick/dünn) und Art (solid/dotted) zeichnen"
+          >
+            <ArrowRight className="w-4 h-4" />
+          </button>
+
           {/* Füllwerkzeug (Paint Bucket) */}
           <button
             onClick={() => {
@@ -1018,6 +1151,32 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
             title="Dreieck sofort einfügen"
           >
             <Triangle className="w-4 h-4 text-amber-600" />
+          </button>
+
+          <button
+            onClick={() => handleAddShape('rhombus')}
+            className="p-2 rounded-xl text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition active:scale-95"
+            title="Raute / Rhombus sofort einfügen"
+          >
+            <Square className="w-4 h-4 text-purple-600 rotate-45" />
+          </button>
+
+          {/* Formerkennung Toggle */}
+          <button
+            onClick={() => setIsShapeRecognitionEnabled(!isShapeRecognitionEnabled)}
+            className={`p-2 rounded-xl text-xs font-semibold transition active:scale-95 flex items-center gap-1.5 ${
+              isShapeRecognitionEnabled
+                ? 'bg-emerald-600 text-white shadow-md shadow-emerald-500/20'
+                : 'text-stone-700 dark:text-stone-200 bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700'
+            }`}
+            title={
+              isShapeRecognitionEnabled
+                ? 'Formerkennung AKTIV: Freihand gezeichnete Kreise, Vierecke, Dreiecke und Rauten werden automatisch perfektioniert'
+                : 'Formerkennung AUS: Tippen zum Aktivieren'
+            }
+          >
+            <Wand2 className="w-4 h-4" />
+            <span className="hidden lg:inline font-semibold">Formerkennung</span>
           </button>
 
           {/* Lineal */}
@@ -1123,10 +1282,10 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
           {/* Stroke Width Buttons */}
           <div className="flex items-center gap-1 border-l border-stone-200 dark:border-stone-800 pl-2">
             {[
-              { size: 2, label: 'Fein' },
+              { size: 2, label: 'Dünn' },
               { size: 4, label: 'Mittel' },
               { size: 8, label: 'Dick' },
-              { size: activeTool === 'highlighter' ? 24 : 14, label: 'Breit' },
+              { size: activeTool === 'highlighter' ? 24 : 12, label: 'Sehr dick' },
             ].map(w => (
               <button
                 key={w.size}
@@ -1136,7 +1295,7 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                     ? 'bg-blue-100 dark:bg-blue-900/60 text-blue-600 font-bold ring-1 ring-blue-500'
                     : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600'
                 }`}
-                title={`Stärke: ${w.label}`}
+                title={`Stärke: ${w.label} (${w.size}px)`}
               >
                 <div
                   className="rounded-full bg-current"
@@ -1145,6 +1304,67 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
               </button>
             ))}
           </div>
+
+          {/* Arrow Tool Specific Customization */}
+          {activeTool === 'arrow' && (
+            <div className="flex items-center gap-1.5 border-l border-stone-200 dark:border-stone-800 pl-2">
+              {/* Art: Solid vs Dotted */}
+              <div className="flex bg-stone-100 dark:bg-stone-800 p-0.5 rounded-lg text-[11px] font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setArrowStyle('solid')}
+                  className={`px-2 py-0.5 rounded-md transition ${
+                    arrowStyle === 'solid'
+                      ? 'bg-white dark:bg-stone-700 shadow-sm text-blue-600 dark:text-blue-400 font-bold'
+                      : 'text-stone-600 dark:text-stone-400 hover:text-stone-800'
+                  }`}
+                  title="Pfeil durchgezogen (solid)"
+                >
+                  Solid
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setArrowStyle('dotted')}
+                  className={`px-2 py-0.5 rounded-md transition ${
+                    arrowStyle === 'dotted'
+                      ? 'bg-white dark:bg-stone-700 shadow-sm text-blue-600 dark:text-blue-400 font-bold'
+                      : 'text-stone-600 dark:text-stone-400 hover:text-stone-800'
+                  }`}
+                  title="Pfeil gepunktet / gestrichelt (dotted)"
+                >
+                  Gepunktet
+                </button>
+              </div>
+
+              {/* Head: Single vs Double */}
+              <div className="flex bg-stone-100 dark:bg-stone-800 p-0.5 rounded-lg text-[11px] font-semibold">
+                <button
+                  type="button"
+                  onClick={() => setArrowHead('end')}
+                  className={`px-2 py-0.5 rounded-md transition ${
+                    arrowHead === 'end'
+                      ? 'bg-white dark:bg-stone-700 shadow-sm text-blue-600 dark:text-blue-400 font-bold'
+                      : 'text-stone-600 dark:text-stone-400 hover:text-stone-800'
+                  }`}
+                  title="Einfacher Pfeil (→)"
+                >
+                  →
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setArrowHead('both')}
+                  className={`px-2 py-0.5 rounded-md transition ${
+                    arrowHead === 'both'
+                      ? 'bg-white dark:bg-stone-700 shadow-sm text-blue-600 dark:text-blue-400 font-bold'
+                      : 'text-stone-600 dark:text-stone-400 hover:text-stone-800'
+                  }`}
+                  title="Doppelpfeil (↔)"
+                >
+                  ↔
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Undo / Redo for Active Page */}
           <div className="flex items-center gap-0.5 border-l border-stone-200 dark:border-stone-800 pl-2">
@@ -1347,6 +1567,13 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
                 onStrokesChange={(newStrokes) => handlePageStrokesChange(index, newStrokes)}
                 onStartDrawing={() => setSelectedElementId(null)}
                 isDarkMode={darkPaper}
+                isShapeRecognitionEnabled={isShapeRecognitionEnabled}
+                onShapeRecognized={(label) => {
+                  setShapeNotice(label);
+                  setTimeout(() => setShapeNotice(null), 2500);
+                }}
+                arrowStyle={arrowStyle}
+                arrowHead={arrowHead}
               />
 
               {/* Laser Pointer Temporary Overlay */}
@@ -1574,6 +1801,25 @@ export const NotebookView: React.FC<NotebookViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* PAGE QR CODE SHARE & SCANNER MODAL */}
+      {isQRModalOpen && activePage && notebook && (
+        <PageQRCodeModal
+          isOpen={isQRModalOpen}
+          onClose={() => setIsQRModalOpen(false)}
+          page={activePage}
+          notebookTitle={notebook.title}
+          onImportPage={handleImportPageFromQR}
+        />
+      )}
+
+      {/* BACKEND SERVER-LOG MODAL (ADMIN ONLY) */}
+      {currentUser?.role === 'admin' && (
+        <AdminLogModal
+          isOpen={isAdminLogOpen}
+          onClose={() => setIsAdminLogOpen(false)}
+        />
       )}
     </div>
   );

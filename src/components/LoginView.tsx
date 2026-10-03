@@ -1,15 +1,16 @@
 import React, { useState } from 'react';
-import { BookOpen, Lock, User as UserIcon, ArrowRight, Eye, EyeOff, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Lock, User as UserIcon, ArrowRight, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { api } from '../services/api';
 import { User } from '../types/notebook';
+import { ModernAppLogo } from './ModernAppLogo';
 
 interface LoginViewProps {
   onLoginSuccess: (user: User) => void;
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('admin123');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -35,11 +36,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     <div className="min-h-screen bg-gradient-to-br from-stone-100 via-blue-50/40 to-stone-200 dark:from-stone-950 dark:via-stone-900 dark:to-stone-950 flex flex-col items-center justify-center p-4 sm:p-6 select-none">
       {/* Brand Header */}
       <div className="w-full max-w-md flex flex-col items-center text-center mb-6">
-        <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/25 mb-4 transform hover:scale-105 transition">
-          <BookOpen className="w-9 h-9" />
-        </div>
+        <ModernAppLogo size="lg" className="mb-4 transform hover:scale-105 transition shadow-2xl" />
         <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-stone-900 dark:text-white">
-          Schulheft Pro
+          Schulhefte
         </h1>
         <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400 mt-1">
           Dateibasierte digitale Schulhefte & Geometrie
@@ -84,7 +83,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
                 autoFocus
                 autoCapitalize="none"
                 autoCorrect="off"
-                placeholder="z. B. admin oder dein Name"
+                placeholder="Benutzername eingeben"
                 className="w-full pl-10 pr-4 py-2.5 text-sm bg-stone-50 dark:bg-stone-800/80 border border-stone-200 dark:border-stone-700 rounded-xl text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
               />
             </div>
@@ -133,18 +132,6 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
             )}
           </button>
         </form>
-
-        {/* Failsafe Admin Info Card */}
-        <div className="mt-6 pt-5 border-t border-stone-100 dark:border-stone-800 text-xs text-stone-500 dark:text-stone-400 bg-stone-50/70 dark:bg-stone-800/40 rounded-2xl p-3.5 flex items-start gap-2.5">
-          <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
-          <div className="leading-relaxed">
-            <span className="font-bold text-stone-800 dark:text-stone-200 block mb-0.5">
-              Admin-Zugang (immer aktiv):
-            </span>
-            Benutzer: <code className="bg-stone-200/70 dark:bg-stone-700 px-1 py-0.5 rounded font-mono text-stone-900 dark:text-white">admin</code> &nbsp;|&nbsp; 
-            Passwort: <code className="bg-stone-200/70 dark:bg-stone-700 px-1 py-0.5 rounded font-mono text-stone-900 dark:text-white">admin123</code>
-          </div>
-        </div>
       </div>
     </div>
   );
